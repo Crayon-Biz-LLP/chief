@@ -67,19 +67,20 @@ async def send_message(user_id: str, text: str):
 
 async def is_trial_expired(user_id: str) -> bool:
     supabase = await get_supabase()
-    response = await supabase.table('core_config').select('updated_at').eq('user_id', user_id).order('updated_at', desc=False).limit(1).execute()
+    # joined_at is written once on /start or Initialize and never updated
+    response = await supabase.table('core_config').select('content').eq('user_id', user_id).eq('key', 'joined_at').limit(1).execute()
     data = response.data
     if not data:
         return False
     
-    created_str = data[0]['updated_at'].replace('Z', '+00:00')
+    joined_str = data[0]['content'].replace('Z', '+00:00')
     try:
-        created_at = datetime.fromisoformat(created_str)
+        joined_at = datetime.fromisoformat(joined_str)
     except ValueError:
         return False
         
     fourteen_days_seconds = 14 * 24 * 60 * 60
-    return (datetime.now(timezone.utc) - created_at).total_seconds() > fourteen_days_seconds
+    return (datetime.now(timezone.utc) - joined_at).total_seconds() > fourteen_days_seconds
 
 async def notify_admin(message: str):
     url = f"https://api.telegram.org/bot{os.getenv('TELEGRAM_BOT_TOKEN')}/sendMessage"

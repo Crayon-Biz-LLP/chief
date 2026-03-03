@@ -245,6 +245,9 @@ async def handle_message(phone_number_id: str, from_number: str, user_id: str, b
         first_name = "Leader"
         if contacts:
             first_name = contacts[0].get("profile", {}).get("name", "Leader").split()[0]
+        # Store join timestamp once — used for 14-day trial expiry
+        from datetime import datetime, timezone
+        await set_config(user_id, 'joined_at', datetime.now(timezone.utc).isoformat())
         await set_config(user_id, 'user_name', first_name)
         await send_step1_persona(pid, from_number)
         return
@@ -349,5 +352,5 @@ async def handle_message(phone_number_id: str, from_number: str, user_id: str, b
         return  # Safety guard
 
     if body:
-        await supabase.table('raw_dumps').insert([{'user_id': user_id, 'content': body}]).execute()
+        await supabase.table('raw_dumps').insert([{'user_id': user_id, 'content': body, 'source': 'whatsapp'}]).execute()
         await send_whatsapp_text(pid, from_number, "✅")

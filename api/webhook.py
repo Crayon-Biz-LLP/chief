@@ -53,20 +53,20 @@ def tz_display(offset: str) -> str:
 
 async def is_trial_expired(user_id: str) -> bool:
     supabase = await get_supabase()
-    response = await supabase.table('core_config').select('created_at').eq('user_id', user_id).order('created_at', desc=False).limit(1).execute()
+    # joined_at is written once on /start and never updated
+    response = await supabase.table('core_config').select('content').eq('user_id', user_id).eq('key', 'joined_at').limit(1).execute()
     data = response.data
     if not data:
         return False
     
-    # Parse the timestamp safely
-    created_str = data[0]['created_at'].replace('Z', '+00:00')
+    joined_str = data[0]['content'].replace('Z', '+00:00')
     try:
-        created_at = datetime.fromisoformat(created_str)
+        joined_at = datetime.fromisoformat(joined_str)
     except ValueError:
         return False
         
     fourteen_days_seconds = 14 * 24 * 60 * 60
-    return (datetime.now(timezone.utc) - created_at).total_seconds() > fourteen_days_seconds
+    return (datetime.now(timezone.utc) - joined_at).total_seconds() > fourteen_days_seconds
 
 async def send_telegram(chat_id: str, text: str, reply_markup: dict = MAIN_KEYBOARD):
     url = f"https://api.telegram.org/bot{os.getenv('TELEGRAM_BOT_TOKEN')}/sendMessage"
@@ -103,6 +103,8 @@ async def process_webhook(update: dict):
         await supabase.table('core_config').delete().eq('user_id', user_id).execute()
         await supabase.table('people').delete().eq('user_id', user_id).execute()
 
+        # Store join timestamp once — used for 14-day trial expiry
+        await set_config(user_id, 'joined_at', datetime.now(timezone.utc).isoformat())
         await set_config(user_id, 'user_name', first_name)
 
         welcome_msg = (
@@ -371,5 +373,5 @@ async def process_webhook(update: dict):
 
     # --- 6. CAPTURE MODE ---
     if text:
-        await supabase.table('raw_dumps').insert([{'user_id': user_id, 'content': text}]).execute()
+        await supabase.table('raw_dumps').insert([{'user_id': user_id, 'content': text, 'source': 'telegram'}]).execute()
         await send_telegram(chat_id, '✅')
