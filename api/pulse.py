@@ -3,10 +3,16 @@ import asyncio
 import httpx
 import json
 from datetime import datetime, timedelta, timezone
-import google.generativeai as genai
-from supabase import create_async_client, AsyncClient
+from google import genai
+from google.genai import types
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+_genai_client: genai.Client | None = None
+
+def get_genai_client() -> genai.Client:
+    global _genai_client
+    if _genai_client is None:
+        _genai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    return _genai_client
 
 _supabase_client: AsyncClient | None = None
 
@@ -136,8 +142,14 @@ OUTPUT JSON:
 }}
 """
 
-        model = genai.GenerativeModel("gemini-2.5-flash", generation_config={"response_mime_type": "application/json"})
-        result = await model.generate_content_async(prompt)
+        client = get_genai_client()
+        result = await client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
         
         raw_text = result.text
         clean_json = raw_text.replace('```json', '').replace('```', '').strip()
