@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from google import genai
 from google.genai import types
+from supabase import create_async_client, AsyncClient
 
 _genai_client: genai.Client | None = None
 
