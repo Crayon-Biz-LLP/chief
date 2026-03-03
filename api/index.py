@@ -24,12 +24,32 @@ async def webhook_route(request: Request):
     await process_webhook(update)
     return {"success": True}
 
-@app.all("/api/pulse")
-async def pulse_route(request: Request):
+@app.post("/api/pulse")
+async def pulse_route_post(request: Request):
     secret = request.headers.get("x-pulse-secret")
     if secret != os.getenv("PULSE_SECRET"):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
-    is_manual = request.headers.get("x-manual-trigger") == 'true'
-    await process_pulse(is_manual)
+    is_manual_trigger = request.headers.get("x-manual-trigger") == 'true'
+    await process_pulse(is_manual_trigger)
+    return {"success": True}
+
+@app.get("/api/whatsapp/webhook")
+async def verify_whatsapp_webhook(request: Request):
+    mode = request.query_params.get("hub.mode")
+    token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
+
+    if mode == "subscribe" and token == os.getenv("WHATSAPP_VERIFY_TOKEN"):
+        # Meta requires a plain integer response for the challenge
+        from fastapi import Response
+        return Response(content=challenge, media_type="text/plain")
+    
+    raise HTTPException(status_code=403, detail="Verification failed")
+
+@app.post("/api/whatsapp/webhook")
+async def receive_whatsapp_webhook(request: Request):
+    update = await request.json()
+    # We will build process_whatsapp_webhook in the next step
+    # await process_whatsapp_webhook(update) 
     return {"success": True}
