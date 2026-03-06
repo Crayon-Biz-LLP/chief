@@ -28,7 +28,17 @@ async def webhook_route(request: Request):
 @app.post("/api/pulse")
 async def pulse_route_post(request: Request):
     secret = request.headers.get("x-pulse-secret")
-    if secret != os.getenv("PULSE_SECRET"):
+    env_secret = os.getenv("PULSE_SECRET")
+    
+    # NEW LOGGING FOR DEBUGGING
+    if not env_secret:
+        print("[AUTH ERROR] Vercel Environment Variable 'PULSE_SECRET' is MISSING or EMPTY!")
+    elif not secret:
+        print("[AUTH ERROR] GitHub Action did not send the 'x-pulse-secret' header!")
+    elif secret != env_secret:
+        print(f"[AUTH ERROR] Secret mismatch! Received length: {len(secret)}, Expected length: {len(env_secret)}")
+        
+    if secret != env_secret:
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     is_manual_trigger = request.headers.get("x-manual-trigger") == 'true'
