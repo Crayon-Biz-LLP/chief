@@ -3,7 +3,10 @@ on:
   schedule:
     # Runs every hour at minute 30 UTC (Which is exactly the top of the hour in IST)
     - cron: '30 * * * *'
-  workflow_dispatch:  # Manual test button
+  push:
+    branches:
+      - feature/python-migration
+  workflow_dispatch:
 
 jobs:
   pulse:
