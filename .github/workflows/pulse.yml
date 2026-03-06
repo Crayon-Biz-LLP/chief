@@ -5,7 +5,7 @@ on:
     - cron: '30 * * * *'
   push:
     branches:
-      - feature/python-migration
+      - main
   workflow_dispatch:
 
 jobs:
