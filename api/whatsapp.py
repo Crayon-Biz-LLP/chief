@@ -231,29 +231,14 @@ async def process_whatsapp_webhook(update: dict):
 
 
 async def handle_message(phone_number_id: str, from_number: str, user_id: str, body: str, interactive_id: str, value: dict):
-    """5-step onboarding state machine + capture mode."""
+    """5-step onboarding state machine + capture mode + invite gatekeeper."""
     pid = phone_number_id
     supabase = await get_supabase()
     lower = body.lower().strip() if body else ""
 
-    # ─── INITIALIZE / START ───
-    if lower in ["initialize", "start", "hi", "hello", "/start"]:
-        # Reset existing config
-        await supabase.table('core_config').delete().eq('user_id', user_id).execute()
-        # Save first name
-        contacts = value.get("contacts", [])
-        first_name = "Leader"
-        if contacts:
-            first_name = contacts[0].get("profile", {}).get("name", "Leader").split()[0]
-        # Store join timestamp once — used for 14-day trial expiry
-        from datetime import datetime, timezone
-        await set_config(user_id, 'joined_at', datetime.now(timezone.utc).isoformat())
-        await set_config(user_id, 'user_name', first_name)
-        await send_step1_persona(pid, from_number)
-        return
-
     # ─── FETCH STATE ───
     configs = await get_configs(user_id)
+    invite_status = next((c['content'] for c in configs if c['key'] == 'invite_status'), None)
     identity   = next((c['content'] for c in configs if c['key'] == 'identity'), None)
     schedule   = next((c['content'] for c in configs if c['key'] == 'pulse_schedule'), None)
     tz_offset  = next((c['content'] for c in configs if c['key'] == 'timezone_offset'), None)
@@ -261,6 +246,45 @@ async def handle_message(phone_number_id: str, from_number: str, user_id: str, b
     anchor1    = next((c['content'] for c in configs if c['key'] == 'anchor_1'), None)
     anchor2    = next((c['content'] for c in configs if c['key'] == 'anchor_2'), None)
     setup_done = next((c['content'] for c in configs if c['key'] == 'initial_people_setup'), None)
+
+    # ─── THE GATEKEEPER (INVITE SYSTEM) ───
+    if not invite_status:
+        # Define your secret invite code here
+        INVITE_CODE = "chief2026" 
+        
+        if lower == INVITE_CODE:
+            # Approve the user
+            await set_config(user_id, 'invite_status', 'approved')
+            
+            # Extract name and start onboarding
+            contacts = value.get("contacts", [])
+            first_name = contacts[0].get("profile", {}).get("name", "Leader").split()[0] if contacts else "Leader"
+            from datetime import datetime, timezone
+            await set_config(user_id, 'joined_at', datetime.now(timezone.utc).isoformat())
+            await set_config(user_id, 'user_name', first_name)
+            
+            await send_whatsapp_text(pid, from_number, "✅ *Invite Accepted.* Access granted.")
+            await send_step1_persona(pid, from_number)
+            return
+        else:
+            # Reject and prompt for code
+            await send_whatsapp_text(pid, from_number, "🔒 *Access Restricted.*\n\nWelcome to Integrated-OS. Please enter your secure invite code to begin.")
+            return
+
+    # ─── INITIALIZE / START (For already invited users wanting to reset) ───
+    if lower in ["initialize", "start", "hi", "hello", "/start"]:
+        await supabase.table('core_config').delete().eq('user_id', user_id).execute()
+        
+        # Re-approve their invite so they don't get locked out on reset
+        await set_config(user_id, 'invite_status', 'approved')
+        
+        contacts = value.get("contacts", [])
+        first_name = contacts[0].get("profile", {}).get("name", "Leader").split()[0] if contacts else "Leader"
+        from datetime import datetime, timezone
+        await set_config(user_id, 'joined_at', datetime.now(timezone.utc).isoformat())
+        await set_config(user_id, 'user_name', first_name)
+        await send_step1_persona(pid, from_number)
+        return
 
     # ─── STEP 1: PERSONA ───
     if not identity:
