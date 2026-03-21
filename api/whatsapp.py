@@ -207,16 +207,16 @@ async def is_trial_expired(user_id: str) -> bool:
 async def send_step1_mission(pid: str, to: str):
     await send_list(pid, to,
         body=(
-            "Let's configure your engine in 60 seconds.\n\n"
-            "*Step 1 of 3 -- What mode are you in?*\n\n"
-            "This tells me how to prioritize your world."
+            "⚡ *Step 1 of 3 — What's your mode?*\n\n"
+            "This tells me what matters most to you right now.\n"
+            "Pick one 👇"
         ),
-        button_label="Select Mode",
+        button_label="Pick Your Mode",
         rows=[
-            {"id": "mission_fix",   "title": "FIX",   "description": "Firefighting. Clear debt, backlog, or chaos."},
-            {"id": "mission_grow",  "title": "GROW",  "description": "Sales mode. More leads, revenue, and deals."},
-            {"id": "mission_build", "title": "BUILD", "description": "Deep work. Ship the product or project."},
-            {"id": "mission_rest",  "title": "REST",  "description": "Recovery. Family, health, and balance."},
+            {"id": "mission_fix",   "title": "🛡️ FIX",   "description": "My life's chaotic. Clear the backlog & fires."},
+            {"id": "mission_grow",  "title": "📈 GROW",  "description": "Sales mode. More leads, cash & deals."},
+            {"id": "mission_build", "title": "🛠️ BUILD", "description": "Deep work. Ship the product or project."},
+            {"id": "mission_rest",  "title": "⚖️ REST",  "description": "Burnt out. Family, health & recovery."},
         ],
     )
 
@@ -224,63 +224,62 @@ async def send_step1_mission(pid: str, to: str):
 async def send_step2_schedule(pid: str, to: str):
     await send_buttons(pid, to,
         body=(
-            "Mode locked.\n\n"
-            "*Step 2 of 3 -- Briefing Schedule*\n"
-            "When should I send your Pulse check-ins?\n\n"
-            "Early: 6AM, 10AM, 2PM, 6PM\n"
-            "Standard: 8AM, 12PM, 4PM, 8PM\n"
-            "Late: 10AM, 2PM, 6PM, 10PM"
+            "🎯 Mode locked!\n\n"
+            "*Step 2 of 3 — When should I check in?*\n\n"
+            "🌅 Early → 6AM, 10AM, 2PM, 6PM\n"
+            "☀️ Standard → 8AM, 12PM, 4PM, 8PM\n"
+            "🌙 Late → 10AM, 2PM, 6PM, 10PM"
         ),
         buttons=[
-            {"id": "sched_early",    "title": "Early"},
-            {"id": "sched_standard", "title": "Standard"},
-            {"id": "sched_late",     "title": "Late"},
+            {"id": "sched_early",    "title": "🌅 Early"},
+            {"id": "sched_standard", "title": "☀️ Standard"},
+            {"id": "sched_late",     "title": "🌙 Late"},
         ],
     )
 
 
 async def send_step3_goal(pid: str, to: str):
     await send_text(pid, to,
-        "Schedule locked.\n\n"
-        "*Step 3 of 3 -- Your 14-Day Goal*\n\n"
-        "What is the ONE outcome you are chasing right now?\n\n"
-        "Type it naturally:\n"
-        "- _Close the Series A term sheet_\n"
-        "- _Ship the MVP and get 10 beta users_\n"
-        "- _Clear all debt and stabilize cash flow_\n"
-        "- _Finish my thesis by March 30_"
+        "⏰ Schedule locked!\n\n"
+        "*Step 3 of 3 — What's your #1 goal right now?*\n\n"
+        "Tell me the ONE thing you're chasing over the next 14 days.\n\n"
+        "Just type it naturally:\n"
+        "• _Close the Series A term sheet_\n"
+        "• _Ship MVP and get 10 beta users_\n"
+        "• _Clear all debt and stabilize cash flow_\n"
+        "• _Finish my thesis by March 30_"
     )
 
 
 async def send_activation(pid: str, to: str, user_name: str, mission: str, schedule: str, tz: str, goal: str):
     mission_display = {
-        "fix": "FIX -- Clear the chaos",
-        "grow": "GROW -- Revenue mode",
-        "build": "BUILD -- Deep work",
-        "rest": "REST -- Recovery",
+        "fix": "🛡️ FIX — Clear the chaos",
+        "grow": "📈 GROW — Revenue mode",
+        "build": "🛠️ BUILD — Deep work",
+        "rest": "⚖️ REST — Recovery",
     }
     schedule_display = {
-        "1": "Early (6AM, 10AM, 2PM, 6PM)",
-        "2": "Standard (8AM, 12PM, 4PM, 8PM)",
-        "3": "Late (10AM, 2PM, 6PM, 10PM)",
+        "1": "🌅 Early (6AM, 10AM, 2PM, 6PM)",
+        "2": "☀️ Standard (8AM, 12PM, 4PM, 8PM)",
+        "3": "🌙 Late (10AM, 2PM, 6PM, 10PM)",
     }
     sign = "+" if float(tz) >= 0 else ""
 
     await send_text(pid, to,
-        f"*You are live, {user_name}.*\n\n"
-        f"Goal: {goal}\n"
+        f"🚀 *You're live, {user_name}!*\n\n"
+        f"🎯 Goal: {goal}\n"
         f"Mode: {mission_display.get(mission, mission)}\n"
         f"Pulse: {schedule_display.get(schedule, 'Standard')}\n"
-        f"Timezone: GMT{sign}{tz} (auto-detected)\n\n"
-        "---\n"
+        f"🌍 Timezone: GMT{sign}{tz}\n\n"
+        "─────────────────\n"
         "*HOW IT WORKS*\n\n"
-        "1. *Dump* -- Send me any thought, task, or update. No formatting needed.\n\n"
-        "2. *I process* -- At your scheduled Pulse times, my AI engine reads everything, "
-        "extracts tasks, detects completions, and builds your briefing.\n\n"
-        "3. *You receive* -- A structured action plan arrives automatically.\n\n"
-        "---\n"
-        "Type *menu* anytime to see all commands.\n"
-        "Or just start dumping your raw thoughts now."
+        "1️⃣ *Dump* — Send me any thought, task, or update. No formatting needed. Just talk.\n\n"
+        "2️⃣ *I process* — At your Pulse times, my AI reads everything, "
+        "extracts tasks, spots completions, and builds your briefing.\n\n"
+        "3️⃣ *You receive* — A structured action plan lands automatically.\n\n"
+        "─────────────────\n"
+        "Type *menu* anytime for all commands.\n\n"
+        "Or just start dumping your raw thoughts now 💭"
     )
 
 
@@ -297,15 +296,15 @@ COMMAND_KEYWORDS = {
 
 async def send_command_menu(pid: str, to: str):
     await send_list(pid, to,
-        body="*COMMAND CENTER*\nPull data instantly. Select an action:",
+        body="📋 *COMMAND CENTER*\nWhat do you need? Pick an action 👇",
         button_label="Open Menu",
         rows=[
-            {"id": "cmd_urgent",   "title": "Urgent",   "description": "Your #1 fire right now."},
-            {"id": "cmd_brief",    "title": "Brief",    "description": "Top 5 active tasks."},
-            {"id": "cmd_goal",     "title": "Goal",     "description": "Your current 14-day target."},
-            {"id": "cmd_vault",    "title": "Vault",    "description": "Last 5 raw thoughts captured."},
-            {"id": "cmd_people",   "title": "People",   "description": "Your registered stakeholders."},
-            {"id": "cmd_settings", "title": "Settings", "description": "Change schedule, goal, or mode."},
+            {"id": "cmd_urgent",   "title": "🔥 Urgent",   "description": "Your #1 fire right now."},
+            {"id": "cmd_brief",    "title": "📊 Brief",    "description": "Top 5 active tasks."},
+            {"id": "cmd_goal",     "title": "🎯 Goal",     "description": "Your current 14-day target."},
+            {"id": "cmd_vault",    "title": "💭 Vault",    "description": "Last 5 raw thoughts captured."},
+            {"id": "cmd_people",   "title": "👥 People",   "description": "Your registered stakeholders."},
+            {"id": "cmd_settings", "title": "⚙️ Settings", "description": "Change schedule, goal, or mode."},
         ],
     )
 
@@ -318,9 +317,9 @@ async def handle_command(pid: str, to: str, user_id: str, command: str):
             .eq("user_id", user_id).eq("priority", "urgent").eq("status", "todo") \
             .limit(1).execute()
         if res.data:
-            await send_text(pid, to, f"*ACTION REQUIRED:*\n\n{res.data[0]['title']}")
+            await send_text(pid, to, f"🔥 *ACTION REQUIRED:*\n\n{res.data[0]['title']}")
         else:
-            await send_text(pid, to, "No active fires. You are clear.")
+            await send_text(pid, to, "✅ No active fires. You're clear.")
 
     elif command in ("brief", "cmd_brief"):
         res = await supabase.table("tasks").select("title, priority") \
@@ -334,16 +333,16 @@ async def handle_command(pid: str, to: str, user_id: str, command: str):
             for t in sorted_t:
                 icon = "[!]" if t["priority"] == "urgent" else "[-]" if t["priority"] == "important" else "[ ]"
                 lines.append(f"{icon} {t['title']}")
-            await send_text(pid, to, "*EXECUTIVE BRIEF:*\n\n" + "\n".join(lines))
+            await send_text(pid, to, "📊 *EXECUTIVE BRIEF:*\n\n" + "\n".join(lines))
         else:
-            await send_text(pid, to, "Task list is empty. Send me some thoughts to get started.")
+            await send_text(pid, to, "📭 Task list is empty. Send me some thoughts to get started!")
 
     elif command in ("goal", "cmd_goal"):
         configs = await get_configs(user_id)
         goal = cfg(configs, "current_season")
         mode = cfg(configs, "mission_mode")
-        mode_labels = {"fix": "FIX", "grow": "GROW", "build": "BUILD", "rest": "REST"}
-        text = f"*CURRENT GOAL:*\n\n{goal}" if goal else "No goal set."
+        mode_labels = {"fix": "🛡️ FIX", "grow": "📈 GROW", "build": "🛠️ BUILD", "rest": "⚖️ REST"}
+        text = f"🎯 *CURRENT GOAL:*\n\n{goal}" if goal else "No goal set."
         if mode:
             text += f"\n*Mode:* {mode_labels.get(mode, mode)}"
         await send_text(pid, to, text)
@@ -359,35 +358,35 @@ async def handle_command(pid: str, to: str, user_id: str, command: str):
                 ts = datetime.fromisoformat(i["created_at"].replace("Z", "+00:00")).strftime("%b %d, %I:%M%p")
                 preview = i["content"][:120] + ("..." if len(i["content"]) > 120 else "")
                 lines.append(f"_{ts}:_ {preview}")
-            await send_text(pid, to, "*VAULT (Last 5):*\n\n" + "\n\n".join(lines))
+            await send_text(pid, to, "💭 *VAULT (Last 5):*\n\n" + "\n\n".join(lines))
         else:
-            await send_text(pid, to, "Vault is empty. Start sending your thoughts!")
+            await send_text(pid, to, "💭 Vault is empty. Start sending your thoughts!")
 
     elif command in ("people", "cmd_people"):
         res = await supabase.table("people").select("name, role").eq("user_id", user_id).execute()
         people = res.data or []
         if people:
             lines = [f"- {p['name']} ({p.get('role', 'Contact')})" for p in people]
-            await send_text(pid, to, "*STAKEHOLDERS:*\n\n" + "\n".join(lines))
+            await send_text(pid, to, "👥 *STAKEHOLDERS:*\n\n" + "\n".join(lines))
         else:
-            await send_text(pid, to, "No stakeholders yet. They will be auto-detected from your updates.")
+            await send_text(pid, to, "👥 No stakeholders yet. They'll be auto-detected from your updates.")
 
     elif command in ("settings", "cmd_settings"):
         await send_list(pid, to,
-            body="*SETTINGS*\nWhat would you like to change?",
+            body="⚙️ *SETTINGS*\nWhat would you like to change?",
             button_label="Open Settings",
             rows=[
-                {"id": "set_schedule", "title": "Change Schedule",  "description": "Switch Early, Standard, or Late."},
-                {"id": "set_mode",     "title": "Change Mode",      "description": "Switch FIX, GROW, BUILD, or REST."},
-                {"id": "set_goal",     "title": "Change Goal",      "description": "Redefine your 14-day objective."},
-                {"id": "set_timezone", "title": "Fix Timezone",     "description": "Override auto-detected timezone."},
-                {"id": "set_reset",    "title": "Full Reset",       "description": "Wipe config and start fresh."},
+                {"id": "set_schedule", "title": "🕐 Change Schedule",  "description": "Switch Early, Standard, or Late."},
+                {"id": "set_mode",     "title": "🎯 Change Mode",      "description": "Switch FIX, GROW, BUILD, or REST."},
+                {"id": "set_goal",     "title": "📝 Change Goal",      "description": "Redefine your 14-day objective."},
+                {"id": "set_timezone", "title": "🌍 Fix Timezone",     "description": "Override auto-detected timezone."},
+                {"id": "set_reset",    "title": "🔄 Full Reset",       "description": "Wipe config and start fresh."},
             ],
         )
 
     elif command in ("reset", "set_reset"):
         await send_buttons(pid, to,
-            body="*Are you sure?*\n\nThis wipes your configuration and restarts setup. Your captured data (tasks, vault) remains.",
+            body="⚠️ *Are you sure?*\n\nThis wipes your configuration and restarts setup.\nYour captured data (tasks, vault) stays safe.",
             buttons=[
                 {"id": "confirm_reset", "title": "Yes, Reset"},
                 {"id": "cancel_reset",  "title": "Cancel"},
@@ -404,41 +403,41 @@ async def handle_settings_action(pid: str, to: str, user_id: str, action_id: str
     if action_id == "set_schedule":
         await set_config(user_id, "_pending_change", "schedule")
         await send_buttons(pid, to,
-            body="*Choose your new Briefing Schedule:*",
+            body="🕐 *Pick your new schedule:*",
             buttons=[
-                {"id": "sched_early",    "title": "Early"},
-                {"id": "sched_standard", "title": "Standard"},
-                {"id": "sched_late",     "title": "Late"},
+                {"id": "sched_early",    "title": "🌅 Early"},
+                {"id": "sched_standard", "title": "☀️ Standard"},
+                {"id": "sched_late",     "title": "🌙 Late"},
             ],
         )
 
     elif action_id == "set_mode":
         await set_config(user_id, "_pending_change", "mode")
         await send_list(pid, to,
-            body="*Choose your new mode:*",
+            body="🎯 *Pick your new mode:*",
             button_label="Select Mode",
             rows=[
-                {"id": "mission_fix",   "title": "FIX",   "description": "Firefighting. Clear debt, backlog, chaos."},
-                {"id": "mission_grow",  "title": "GROW",  "description": "Sales mode. Revenue and deals."},
-                {"id": "mission_build", "title": "BUILD", "description": "Deep work. Ship the product."},
-                {"id": "mission_rest",  "title": "REST",  "description": "Recovery. Family and health."},
+                {"id": "mission_fix",   "title": "🛡️ FIX",   "description": "Firefighting. Clear debt, backlog, chaos."},
+                {"id": "mission_grow",  "title": "📈 GROW",  "description": "Sales mode. Revenue and deals."},
+                {"id": "mission_build", "title": "🛠️ BUILD", "description": "Deep work. Ship the product."},
+                {"id": "mission_rest",  "title": "⚖️ REST",  "description": "Recovery. Family and health."},
             ],
         )
 
     elif action_id == "set_goal":
         await set_config(user_id, "_pending_change", "goal")
-        await send_text(pid, to, "Type your new 14-day goal below:")
+        await send_text(pid, to, "✏️ Type your new 14-day goal below:")
 
     elif action_id == "set_timezone":
         await set_config(user_id, "_pending_change", "timezone")
         await send_text(pid, to,
-            "*Override Timezone*\n\n"
+            "🌍 *Override Timezone*\n\n"
             "Type your GMT offset as a number:\n"
-            "- 5.5 for India\n"
-            "- -5 for US Eastern\n"
-            "- 0 for UK\n"
-            "- 8 for Singapore\n"
-            "- 3 for Dubai/Nairobi"
+            "• 5.5 → India\n"
+            "• -5 → US Eastern\n"
+            "• 0 → UK\n"
+            "• 8 → Singapore\n"
+            "• 3 → Dubai/Nairobi"
         )
 
 
@@ -488,7 +487,7 @@ async def process_whatsapp_webhook(update: dict):
                             body = interactive.get("list_reply", {}).get("title", "")
                     else:
                         await send_text(phone_number_id, from_number,
-                            "I only process text right now. Type your thought as a message.")
+                            "📝 I only process text right now. Type your thought as a message.")
                         continue
 
                     # Blue ticks
@@ -539,6 +538,9 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
         INVITE_CODE = os.getenv("INVITE_CODE", "chief2026").lower()
 
         if lower == INVITE_CODE:
+            # Wipe any stale config from prior sessions before fresh setup
+            await supabase.table("core_config").delete().eq("user_id", user_id).execute()
+
             await set_config(user_id, "invite_status", "approved")
 
             contacts = value.get("contacts", [])
@@ -555,16 +557,16 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
 
             sign = "+" if float(tz_offset) >= 0 else ""
             await send_text(pid, to,
-                f"*Welcome, {first_name}.* Access granted.\n"
-                f"Timezone auto-detected: GMT{sign}{tz_offset}\n\n"
-                "Let's configure your AI Chief of Staff."
+                f"👋 *Welcome, {first_name}!* You're in.\n\n"
+                f"🌍 Timezone auto-detected: GMT{sign}{tz_offset}\n\n"
+                "Let's get you set up in 60 seconds."
             )
             await send_step1_mission(pid, to)
         else:
             await send_text(pid, to,
-                "*Access Restricted*\n\n"
-                "This is *Chief* -- your AI-powered executive assistant.\n\n"
-                "Enter your invite code to begin."
+                "🔒 *Access Restricted*\n\n"
+                "This is *Chief* — your AI-powered Chief of Staff on WhatsApp.\n\n"
+                "Send your invite code to get started."
             )
         return
 
@@ -581,12 +583,12 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
         await set_config(user_id, "user_name", first_name)
         tz_offset = detect_timezone(to)
         await set_config(user_id, "timezone_offset", tz_offset)
-        await send_text(pid, to, "*Reset complete.* Let's set you up again.")
+        await send_text(pid, to, "*🔄 Reset complete.* Let's set you up again.")
         await send_step1_mission(pid, to)
         return
 
     if interactive_id == "cancel_reset":
-        await send_text(pid, to, "Reset cancelled. Still operational.")
+        await send_text(pid, to, "Reset cancelled. Still operational. 👍")
         return
 
     if lower in ("start", "initialize", "/start", "restart"):
@@ -632,7 +634,7 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
             tz = cfg(configs, "timezone_offset") or detect_timezone(to)
             await send_activation(pid, to, user_name, mission_mode, schedule, tz, body)
         else:
-            await send_text(pid, to, "Please type your main goal for the next 14 days (at least a few words).")
+            await send_text(pid, to, "✏️ Please type your main goal for the next 14 days (at least a few words).")
         return
 
     # ===========================================================
@@ -645,7 +647,7 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
     # Trial Expiry
     if await is_trial_expired(user_id):
         await send_text(pid, to,
-            "Your 14-day sprint has concluded.\n\n"
+            "⏳ Your 14-day sprint has concluded.\n\n"
             "Contact your admin to continue using Chief."
         )
         return
@@ -658,14 +660,14 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
             if chosen:
                 await set_config(user_id, "pulse_schedule", chosen)
                 await del_config(user_id, "_pending_change")
-                names = {"1": "Early", "2": "Standard", "3": "Late"}
-                await send_text(pid, to, f"*Schedule updated to {names[chosen]}.*")
+                names = {"1": "🌅 Early", "2": "☀️ Standard", "3": "🌙 Late"}
+                await send_text(pid, to, f"✅ *Schedule updated to {names[chosen]}.*")
             else:
-                await send_buttons(pid, to, body="Please select your new schedule:",
+                await send_buttons(pid, to, body="Pick your new schedule:",
                     buttons=[
-                        {"id": "sched_early", "title": "Early"},
-                        {"id": "sched_standard", "title": "Standard"},
-                        {"id": "sched_late", "title": "Late"},
+                        {"id": "sched_early", "title": "🌅 Early"},
+                        {"id": "sched_standard", "title": "☀️ Standard"},
+                        {"id": "sched_late", "title": "🌙 Late"},
                     ])
             return
 
@@ -678,8 +680,8 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
             if chosen:
                 await set_config(user_id, "mission_mode", chosen)
                 await del_config(user_id, "_pending_change")
-                labels = {"fix": "FIX", "grow": "GROW", "build": "BUILD", "rest": "REST"}
-                await send_text(pid, to, f"*Mode updated to {labels[chosen]}.*")
+                labels = {"fix": "🛡️ FIX", "grow": "📈 GROW", "build": "🛠️ BUILD", "rest": "⚖️ REST"}
+                await send_text(pid, to, f"✅ *Mode updated to {labels[chosen]}.*")
             else:
                 await handle_settings_action(pid, to, user_id, "set_mode")
             return
@@ -688,9 +690,9 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
             if body and len(body) >= 5:
                 await set_config(user_id, "current_season", body)
                 await del_config(user_id, "_pending_change")
-                await send_text(pid, to, f"*Goal updated:* {body}")
+                await send_text(pid, to, f"✅ *Goal updated:* {body}")
             else:
-                await send_text(pid, to, "Please type your new goal (at least a few words).")
+                await send_text(pid, to, "✏️ Please type your new goal (at least a few words).")
             return
 
         elif pending == "timezone":
@@ -700,9 +702,9 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
                 await set_config(user_id, "timezone_offset", offset)
                 await del_config(user_id, "_pending_change")
                 sign = "+" if float(offset) >= 0 else ""
-                await send_text(pid, to, f"*Timezone updated to GMT{sign}{offset}.*")
+                await send_text(pid, to, f"✅ *Timezone updated to GMT{sign}{offset}.*")
             else:
-                await send_text(pid, to, "Please type a number (e.g., 5.5, -5, 0).")
+                await send_text(pid, to, "🔢 Please type a number (e.g., 5.5, -5, 0).")
             return
 
     # Handle Settings List Replies
@@ -733,4 +735,4 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
         await supabase.table("raw_dumps").insert(
             [{"user_id": user_id, "content": body, "source": "whatsapp"}]
         ).execute()
-        await send_text(pid, to, "Captured.")
+        await send_text(pid, to, "✅")
