@@ -1,20 +1,30 @@
-# Integrated-OS: Deployment & Connection Guide
+# Chief OS: Deployment & Connection Guide (v2)
 
 This document provides a comprehensive end-to-end guide on configuring, deploying, and tying together the systems that power the **Chief OS Digital 2iC (Python Engine)**.
 
 ## Architecture Overview
-The system operates as a Serverless Python API hosted on **Vercel**. It uses **Supabase** for PostgreSQL database state management and **Google Gemini** for AI synthesis. Interaction is handled by webhooks connected to **Meta WhatsApp Cloud API** and **Telegram Bot API**. Periodic AI Briefings (Pulse) are triggered securely by **GitHub Actions Cron**.
+The system operates as a Serverless Python API hosted on **Vercel**. It uses **Supabase** for PostgreSQL database state management and **Google Gemini 2.5 Flash** for AI synthesis. Interaction is handled by webhooks connected to **Meta WhatsApp Cloud API** and **Telegram Bot API**. Periodic AI Briefings (Pulse) are triggered securely by **GitHub Actions Cron**.
+
+**v2 Changes:** Auto-timezone detection, 3-step onboarding, mission modes, URL enrichment, resource capture, WhatsApp interactive menus.
 
 ---
 
 ## 1. Supabase Database Setup
 Supabase serves as the nervous system for the OS.
 
-You must have the following tables initialized:
-*   `core_config` (User settings, joined timestamps, identity, schedules, mission, anchors)
-*   `raw_dumps` (User's unstructured thoughts and messages; marked with `is_processed=FALSE`)
-*   `tasks` (Structured actionable items extracted by the LLM)
-*   `people` (Known stakeholders from the onboarding anchors)
+### Core Tables (Required):
+*   `core_config` — User settings KV store (mission_mode, pulse_schedule, timezone_offset, current_season, etc.)
+*   `raw_dumps` — User's unstructured thoughts; marked with `is_processed=FALSE`
+*   `tasks` — Structured actionable items extracted by AI (includes `is_revenue_critical`, `reminder_at`, `deadline`)
+*   `projects` — User's project categories with `org_tag` for routing
+*   `people` — Stakeholders auto-detected from user dumps
+*   `logs` — AI-generated logs (IDEAS, SPARK, etc.)
+
+### New Tables (v2):
+*   `resources` — URLs/links captured from dumps (category, summary, project/mission links)
+*   `missions` — Strategic goals auto-detected from patterns
+
+> Full schema reference: [`Docs/SCHEMA.md`](./SCHEMA.md)
 
 **Connection Details needed for Vercel:**
 *   `SUPABASE_URL`: Your Supabase Project URL.
@@ -34,8 +44,11 @@ Vercel hosts the serverless Python functions that process incoming webhook event
     *   `TELEGRAM_BOT_TOKEN` (From BotFather)
     *   `TELEGRAM_WEBHOOK_SECRET` (Custom secret phrase used to verify incoming Telegram webhooks)
     *   `WHATSAPP_ACCESS_TOKEN` (From Meta App Dashboard -> API Setup)
-    *   `WHATSAPP_PHONE_NUMBER_ID` (From Meta App Dashboard -> API Setup - *Crucial for the automated Pulse*)
-    *   `PULSE_SECRET` (A custom strong password to protect the `/api/pulse` endpoint).
+    *   `WHATSAPP_VERIFY_TOKEN` (Custom string used in Meta webhook verification)
+    *   `WHATSAPP_PHONE_NUMBER_ID` (From Meta App Dashboard -> API Setup — *Crucial for Pulse delivery*)
+    *   `PULSE_SECRET` (A custom strong password to protect the `/api/pulse` endpoint)
+    *   `INVITE_CODE` (The invite code users must enter to activate — default: `chief2026`)
+    *   `ADMIN_CHAT_ID` (Optional — Telegram chat ID for error alerts)
 
 *Wait for Vercel to generate your production URL: e.g., `https://chief-three.vercel.app`.*
 
@@ -71,28 +84,31 @@ Vercel goes to sleep when not actively queried. We use GitHub Actions to run a c
 
 ---
 
-## 5. End-to-End Application Flow
+## 5. End-to-End Application Flow (v2)
 
-### Phase 1: Onboarding (Account Setup)
-1.  User sends `Initialize` or `Start` to the WhatsApp or Telegram bot.
-2.  The webhook endpoint receives this, wipes any existing database configs for the user, and triggers **Step 1: Persona Selection** (Boss/Partner/Friend).
-3.  User taps the interactive button response. The webhook records this to `core_config` and triggers **Step 2: Schedule**.
-4.  User answers Schedule, Timezone (e.g., `5.5`), Mission, and Anchors.
-5.  Upon Completion, the user is marked as fully calibrated.
+### Phase 1: WhatsApp Onboarding (3 Steps)
+1.  New user sends any message → Gatekeeper prompts for invite code.
+2.  User sends the correct `INVITE_CODE` → Access granted.
+3.  **Timezone auto-detected** from phone number country code (e.g., +91 → GMT+5.5). Zero friction.
+4.  **Step 1: Mission Mode** → User selects FIX / GROW / BUILD / REST (WhatsApp List Message).
+5.  **Step 2: Schedule** → User selects Early / Standard / Late (WhatsApp Buttons).
+6.  **Step 3: Goal** → User types their 14-day goal as free text.
+7.  Activation message confirms config. User is now live.
 
-### Phase 2: Capture Mode (Raw Storage)
-1.  Once Setup is complete, any normal text message sent by the user (e.g., "Need to fire Jim tomorrow" or "Idea: new SaaS app") simply triggers Capture Mode.
-2.  The webhook receives the payload and writes it directly to the `raw_dumps` table linked to their `user_id`.
-3.  The bot replies instantly with a simple ✅ to acknowledge storage. The LLM is **not** invoked here to save costs and latency.
+### Phase 2: Active User — Commands & Capture
+*   **Capture Mode:** Any normal text → stored in `raw_dumps`. Bot replies "Captured." LLM is NOT invoked (saves cost/latency).
+*   **Command Menu:** Type `menu`, `help`, or `commands` → WhatsApp List Message with all actions.
+*   **Direct Commands:** Type `urgent`, `brief`, `goal`, `vault`, `people`, or `settings`.
+*   **Settings:** Change schedule, mode, goal, or override timezone via interactive menus.
+*   **Reset:** Type `start` or `reset` → confirmation button → full config wipe + re-onboarding.
 
 ### Phase 3: The Pulse (AI Generation)
-1.  At the top of the hour (HH:30 UTC), GitHub Actions pings `https://[YOUR_VERCEL_URL]/api/pulse` with the master secret.
-2.  Vercel queries `core_config` for all users and checks if the current hour matches their elected `pulse_schedule` (adjusted by their `timezone_offset`).
-3.  For scheduled users, it pulls all their unread `raw_dumps` and active `tasks`.
-4.  These are aggregated and pushed to the **Gemini 2.5 Flash** model with a hardcoded high-density Executive Markdown prompt.
-5.  Gemini returns a synthesized JSON containing:
-    *   The `briefing` (markdown string)
-    *   `new_tasks` (to be inserted into the tasks table)
-    *   `completed_task_ids` (to be marked as done based on the user's latest dumps).
-6.  The `raw_dumps` are marked as `is_processed=TRUE`.
-7.  The final formatted briefing is pushed outward via the correct Meta or Telegram REST API to the user's phone.
+1.  GitHub Actions pings `https://[YOUR_VERCEL_URL]/api/pulse` every hour with `x-pulse-secret`.
+2.  Vercel queries `core_config` for all users, checks schedule vs local time (auto-detected timezone).
+3.  For each scheduled user, pulls: unread `raw_dumps`, active `tasks`, `projects`, `people`.
+4.  **URL Enrichment:** Any URLs in dumps are scraped for og:title/description metadata.
+5.  **Mission Mode** shapes the AI persona (FIX=crisis manager, GROW=sales strategist, BUILD=product engineer, REST=wellbeing coach).
+6.  Gemini 2.5 Flash generates JSON: `briefing`, `new_tasks`, `completed_task_ids`, `new_projects`, `new_people`, `resources`, `logs`.
+7.  Database writes: tasks created/completed, projects/people auto-onboarded, resources saved, dumps marked processed.
+8.  Briefing routed to WhatsApp or Telegram based on `user_id` prefix (`wa_` or `tg_`).
+9.  Race condition lock: 30-min cooldown per user prevents duplicate pulses.
