@@ -1,6 +1,7 @@
 import os
 import re
 import httpx
+import hashlib
 from datetime import datetime, timezone
 from supabase import create_async_client, AsyncClient
 
@@ -110,6 +111,9 @@ async def _wa_post(phone_number_id: str, payload: dict):
 
 
 async def send_text(pid: str, to: str, text: str, preview_url: bool = False):
+    # Auto-prefix bot identity on all outgoing messages
+    if not text.startswith("🤖"):
+        text = f"🤖 {text}"
     await _wa_post(pid, {
         "messaging_product": "whatsapp", "to": to,
         "type": "text", "text": {"body": text, "preview_url": preview_url},
@@ -117,6 +121,8 @@ async def send_text(pid: str, to: str, text: str, preview_url: bool = False):
 
 
 async def send_buttons(pid: str, to: str, body: str, buttons: list):
+    if not body.startswith("🤖"):
+        body = f"🤖 {body}"
     await _wa_post(pid, {
         "messaging_product": "whatsapp", "to": to,
         "type": "interactive",
@@ -133,6 +139,8 @@ async def send_buttons(pid: str, to: str, body: str, buttons: list):
 
 
 async def send_list(pid: str, to: str, body: str, button_label: str, rows: list):
+    if not body.startswith("🤖"):
+        body = f"🤖 {body}"
     await _wa_post(pid, {
         "messaging_product": "whatsapp", "to": to,
         "type": "interactive",
@@ -735,4 +743,20 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
         await supabase.table("raw_dumps").insert(
             [{"user_id": user_id, "content": body, "source": "whatsapp"}]
         ).execute()
-        await send_text(pid, to, "✅")
+
+        # Varied acknowledgments so it feels like a conversation
+        acks = [
+            "🤖 Got it!",
+            "🤖 Noted, keep going.",
+            "🤖 Heard you. Anything else?",
+            "🤖 On it.",
+            "🤖 Saved. What else?",
+            "🤖 Got that down.",
+            "🤖 Okay, noted!",
+            "🤖 Understood.",
+            "🤖 Makes sense. Keep going!",
+            "🤖 Gotcha. What's next?",
+        ]
+        # Deterministic rotation based on message content hash
+        idx = int(hashlib.md5(body.encode()).hexdigest(), 16) % len(acks)
+        await send_text(pid, to, acks[idx])

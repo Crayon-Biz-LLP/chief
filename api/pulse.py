@@ -59,10 +59,13 @@ WHATSAPP_API_URL = "https://graph.facebook.com/v22.0"
 
 async def send_message(user_id: str, text: str):
     """Route a Pulse briefing to WhatsApp or Telegram based on user_id prefix."""
+    # Auto-prefix bot identity
+    if not text.startswith("🤖"):
+        text = f"🤖 {text}"
+
     if user_id.startswith("wa_"):
         phone_number = user_id[3:]
         phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
-        wa_text = text + "\n\n_Reply 'ok' to keep your session active._"
         url = f"{WHATSAPP_API_URL}/{phone_number_id}/messages"
         headers = {
             "Authorization": f"Bearer {os.getenv('WHATSAPP_ACCESS_TOKEN')}",
@@ -72,7 +75,7 @@ async def send_message(user_id: str, text: str):
             "messaging_product": "whatsapp",
             "to": phone_number,
             "type": "text",
-            "text": {"body": wa_text}
+            "text": {"body": text}
         }
         async with httpx.AsyncClient(timeout=15.0) as client:
             res = await client.post(url, json=payload, headers=headers)
@@ -325,16 +328,40 @@ async def process_user(user_id: str, is_manual_test: bool):
         6. AUTO-ONBOARDING: New client/org -> "new_projects". New person mentioned -> "new_people".
         7. WEEKEND FILTER: If weekend ({is_weekend}), hide work tasks. Note any work inputs for Monday.
         8. RESOURCE CAPTURE: If NEW INPUTS contains URLs, categorize them and add to "resources" array. Do NOT create tasks from URLs unless the user explicitly says to.
-        9. EXECUTIVE BRIEF FORMAT:
-            - Use *bold* for headers (WhatsApp compatible).
-            - SECTIONS: COMPLETED, WORK (hide weekends), HOME, IDEAS (evening only).
-            - Every task: "- [Task Title]" (no IDs, no metadata).
-            - Keep it concise. Max 3-5 items per section.
-            - NEVER include task IDs, weights, or scores in the briefing text.
+
+        9. *BRIEFING FORMAT — THIS IS CRITICAL*:
+            The briefing will be sent directly via WhatsApp. It must look clean, structured, and professional.
+
+            HEADER: Start with a one-line greeting: "*Good [morning/afternoon/evening], {user_name}* 👋" based on CURRENT TIME.
+            Then a blank line.
+
+            If STAGNANT URGENT TASKS exist, add a *🔴 OVERDUE* section first with those items.
+
+            SECTION STRUCTURE (only include sections that have items):
+            - Use section headers with emoji: "✅ *COMPLETED*", "💼 *WORK*", "🏠 *HOME*", "💡 *IDEAS*", "📌 *UPCOMING*"
+            - Under each header, list items as: "→ Item text"
+            - Add deadline/date info inline when relevant: "→ Take RE letter to RTO _(by Monday)_"
+            - Add a blank line between sections.
+            - Hide WORK section on weekends. Hide HOME/IDEAS sections in morning briefings unless relevant.
+
+            FOOTER: End with a short one-liner based on mission mode and time of day. Examples:
+            - Morning: "Let's attack the day. 🚀"
+            - Midday: "Stay locked in. You're on track. 💪"
+            - Evening: "Wind down. Tomorrow's another round. 🌙"
+            - Weekend: "Enjoy the weekend. Recharge. ⚡"
+
+            FORMATTING RULES:
+            - Use ONLY single asterisks (*bold*) for bold. NEVER use double asterisks.
+            - Use underscores for italic (_italic_) ONLY for dates/notes, never for emphasis.
+            - NEVER include task IDs, weights, scores, or internal metadata.
+            - NEVER use markdown headers (#). Only WhatsApp-compatible formatting.
+            - Keep it concise: max 3-5 items per section. No filler text.
+            - Do NOT add "Reply ok" or session prompts.
+
         10. MARKDOWN SAFETY:
             - Use ONLY single asterisks (*) for bold.
-            - Never use underscores for emphasis (breaks WhatsApp).
             - Never nest formatting.
+            - Arrow (→) for list items, not dashes or bullets.
 
         OUTPUT JSON:
         {{
@@ -347,7 +374,7 @@ async def process_user(user_id: str, is_manual_test: bool):
             "new_tasks": [{{ "title": "...", "project_name": "...", "priority": "urgent", "est_min": 15 }}],
             "resources": [{{ "url": "...", "title": "...", "summary": "...", "category": "ARTICLE" }}],
             "logs": [{{ "entry_type": "IDEAS", "content": "..." }}],
-            "briefing": "The formatted briefing string for WhatsApp/Telegram."
+            "briefing": "The formatted briefing string for WhatsApp."
         }}
         """
 
