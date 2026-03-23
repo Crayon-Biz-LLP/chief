@@ -182,17 +182,71 @@ async def delete_calendar_event(user_id: str, event_id: str):
 # GOOGLE TASKS — Create / Complete tasks
 # ─────────────────────────────────────────────
 
+CHIEF_LIST_NAME = "🤖 Chief OS"
+
+# In-memory cache: user_id → tasklist_id (avoids repeated API calls per pulse cycle)
+_tasklist_cache: dict[str, str] = {}
+
+
+async def get_or_create_chief_tasklist(access_token: str, user_id: str) -> str:
+    """Find or create a dedicated 'Chief OS' task list. Returns the tasklist ID."""
+    # Check cache first
+    if user_id in _tasklist_cache:
+        return _tasklist_cache[user_id]
+
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # List existing task lists
+            resp = await client.get(f"{TASKS_API}/users/@me/lists", headers=headers)
+            if resp.is_success:
+                for tl in resp.json().get("items", []):
+                    if tl.get("title") == CHIEF_LIST_NAME:
+                        _tasklist_cache[user_id] = tl["id"]
+                        return tl["id"]
+
+            # Not found — create it
+            resp = await client.post(
+                f"{TASKS_API}/users/@me/lists",
+                json={"title": CHIEF_LIST_NAME},
+                headers=headers,
+            )
+            if resp.is_success:
+                list_id = resp.json()["id"]
+                _tasklist_cache[user_id] = list_id
+                print(f"[TASKS] Created '{CHIEF_LIST_NAME}' list for {user_id}")
+                return list_id
+
+    except Exception as e:
+        print(f"[TASKS LIST] Error for {user_id}: {e}")
+
+    return "@default"  # Fallback to default list
+
+
+PRIORITY_EMOJI = {
+    "urgent": "🔥",
+    "important": "⚡",
+    "chores": "🔧",
+    "ideas": "💡",
+}
+
+
 async def sync_to_google_tasks(user_id: str, title: str,
                                 due_at: str | None = None,
                                 task_id: str | None = None,
-                                status: str = "todo") -> str | None:
+                                status: str = "todo",
+                                priority: str | None = None) -> str | None:
     """
-    Create, update, or complete a Google Task.
+    Create, update, or complete a Google Task in the Chief OS list.
     Returns the Google Tasks task_id, or None on failure.
     """
     access_token = await get_user_access_token(user_id)
     if not access_token:
         return None
+
+    # Get the dedicated Chief OS task list
+    list_id = await get_or_create_chief_tasklist(access_token, user_id)
 
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -204,7 +258,7 @@ async def sync_to_google_tasks(user_id: str, title: str,
             # Complete/cancel → mark as completed
             if task_id and status in ("done", "cancelled"):
                 resp = await client.patch(
-                    f"{TASKS_API}/lists/@default/tasks/{task_id}",
+                    f"{TASKS_API}/lists/{list_id}/tasks/{task_id}",
                     json={"status": "completed"},
                     headers=headers,
                 )
@@ -213,6 +267,12 @@ async def sync_to_google_tasks(user_id: str, title: str,
             # Build task body
             body = {}
             if title:
+                # Priority emoji prefix
+                if priority and priority in PRIORITY_EMOJI:
+                    emoji = PRIORITY_EMOJI[priority]
+                    if not title.startswith(emoji):
+                        title = f"{emoji} {title}"
+
                 # Time visibility hack: prepend time to title
                 if due_at and "T" in due_at:
                     time_str = due_at.split("T")[1][:5]
@@ -226,13 +286,13 @@ async def sync_to_google_tasks(user_id: str, title: str,
             if task_id:
                 # Update existing
                 resp = await client.patch(
-                    f"{TASKS_API}/lists/@default/tasks/{task_id}",
+                    f"{TASKS_API}/lists/{list_id}/tasks/{task_id}",
                     json=body, headers=headers,
                 )
             else:
                 # Create new
                 resp = await client.post(
-                    f"{TASKS_API}/lists/@default/tasks",
+                    f"{TASKS_API}/lists/{list_id}/tasks",
                     json=body, headers=headers,
                 )
 
@@ -254,16 +314,22 @@ async def sync_to_google_tasks(user_id: str, title: str,
 # BACKFILL — Sync all existing tasks to Google
 # ─────────────────────────────────────────────
 
-async def backfill_tasks_to_google(user_id: str) -> dict:
+async def backfill_tasks_to_google(user_id: str, resync: bool = False) -> dict:
     """
     One-time sync: push all active (status=todo) tasks to Google Tasks + Calendar.
-    Skips tasks that already have a google_task_id.
+    If resync=True, clears existing google_task_id and re-syncs all tasks (use after switching to dedicated list).
+    Skips tasks that already have a google_task_id (unless resync).
     Returns a summary dict with counts.
     """
     if not await has_google_connection(user_id):
         return {"error": "No Google connection for this user"}
 
     supabase = await get_supabase()
+
+    if resync:
+        # Clear old Google IDs so all tasks get re-synced to the new list
+        await supabase.table("tasks").update({"google_task_id": None, "google_event_id": None}) \
+            .eq("user_id", user_id).eq("status", "todo").execute()
 
     # Fetch all active tasks that haven't been synced yet
     res = await supabase.table("tasks").select("*") \
@@ -282,12 +348,13 @@ async def backfill_tasks_to_google(user_id: str) -> dict:
         try:
             t_id = task.get("id")
             title = task.get("title", "")
+            priority = task.get("priority")
             reminder = task.get("reminder_at")
             deadline = task.get("deadline")
             due = reminder or deadline  # prefer reminder_at, fallback to deadline
 
             # Create Google Task
-            g_tid = await sync_to_google_tasks(user_id, title, due_at=due)
+            g_tid = await sync_to_google_tasks(user_id, title, due_at=due, priority=priority)
 
             # Create Calendar event if task has a specific time
             g_eid = None

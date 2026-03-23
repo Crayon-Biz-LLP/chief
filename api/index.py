@@ -102,10 +102,11 @@ async def google_backfill(request: Request):
     """One-time sync: push all existing active tasks to Google Tasks + Calendar."""
     user_id = request.query_params.get("user")
     secret = request.query_params.get("secret")
+    resync = request.query_params.get("resync", "").lower() == "true"
     env_secret = os.getenv("PULSE_SECRET")
 
     if not user_id or secret != env_secret:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    result = await backfill_tasks_to_google(user_id)
+    result = await backfill_tasks_to_google(user_id, resync=resync)
     return result

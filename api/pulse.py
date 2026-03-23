@@ -520,9 +520,10 @@ async def process_user(user_id: str, is_manual_test: bool):
                             t_id = created_task.get('id')
                             t_title = created_task.get('title', '')
                             t_reminder = created_task.get('reminder_at')
+                            t_priority = created_task.get('priority')
 
                             # Create Google Task
-                            g_tid = await sync_to_google_tasks(user_id, t_title, due_at=t_reminder)
+                            g_tid = await sync_to_google_tasks(user_id, t_title, due_at=t_reminder, priority=t_priority)
 
                             # Create Calendar event if task has a specific time
                             g_eid = None
