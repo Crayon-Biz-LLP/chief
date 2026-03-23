@@ -30,9 +30,11 @@ async def get_supabase() -> AsyncClient:
 
 
 def get_redirect_uri() -> str:
-    """Build the callback URL from the Vercel deployment."""
-    # Works for both chief-three.vercel.app and custom domains
-    base = os.getenv("VERCEL_URL", "chief-three.vercel.app")
+    """Build the callback URL from the stable production domain."""
+    # VERCEL_URL gives deployment-specific URLs (e.g. chief-rdnwdcdd4-xxx.vercel.app)
+    # which change every deploy and won't match Google's authorized redirect URIs.
+    # Use a dedicated env var or fall back to the known production alias.
+    base = os.getenv("APP_URL", "https://chief-three.vercel.app")
     if not base.startswith("http"):
         base = f"https://{base}"
     return f"{base}/api/auth/google/callback"

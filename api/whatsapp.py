@@ -4,7 +4,6 @@ import httpx
 import hashlib
 from datetime import datetime, timezone
 from supabase import create_async_client, AsyncClient
-from .auth import build_google_auth_url
 from .google_sync import has_google_connection
 
 WHATSAPP_API_URL = "https://graph.facebook.com/v22.0"
@@ -466,12 +465,12 @@ async def handle_settings_action(pid: str, to: str, user_id: str, action_id: str
                 "Your tasks and calendar events are syncing automatically."
             )
         else:
-            auth_url = build_google_auth_url(user_id)
+            short_url = f"https://chief-three.vercel.app/api/auth/google?user={user_id}"
             await send_text(pid, to,
                 "📅 *Connect Google Calendar & Tasks*\n\n"
                 "Tap the link below to grant access. "
                 "Chief will sync your tasks to Google Calendar and Google Tasks automatically.\n\n"
-                f"👉 {auth_url}\n\n"
+                f"👉 {short_url}\n\n"
                 "_You'll be redirected back here once done._"
             )
 
@@ -670,11 +669,11 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
             await send_activation(pid, to, user_name, mission_mode, schedule, tz, body)
 
             # Offer Google Calendar connect after activation
-            auth_url = build_google_auth_url(user_id)
+            short_url = f"https://chief-three.vercel.app/api/auth/google?user={user_id}"
             await send_text(pid, to,
                 "📅 *One more thing — connect Google?*\n\n"
                 "Chief can auto-sync your tasks to Google Calendar and Google Tasks.\n\n"
-                f"👉 {auth_url}\n\n"
+                f"👉 {short_url}\n\n"
                 "_Optional — you can always do this later from *settings*._"
             )
         else:
