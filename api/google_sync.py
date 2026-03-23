@@ -248,3 +248,65 @@ async def sync_to_google_tasks(user_id: str, title: str,
     except Exception as e:
         print(f"[TASKS CRITICAL] {user_id}: {e}")
         return None
+
+
+# ─────────────────────────────────────────────
+# BACKFILL — Sync all existing tasks to Google
+# ─────────────────────────────────────────────
+
+async def backfill_tasks_to_google(user_id: str) -> dict:
+    """
+    One-time sync: push all active (status=todo) tasks to Google Tasks + Calendar.
+    Skips tasks that already have a google_task_id.
+    Returns a summary dict with counts.
+    """
+    if not await has_google_connection(user_id):
+        return {"error": "No Google connection for this user"}
+
+    supabase = await get_supabase()
+
+    # Fetch all active tasks that haven't been synced yet
+    res = await supabase.table("tasks").select("*") \
+        .eq("user_id", user_id).eq("status", "todo") \
+        .is_("google_task_id", "null") \
+        .execute()
+
+    tasks = res.data or []
+    if not tasks:
+        return {"synced_tasks": 0, "synced_events": 0, "message": "No unsynced tasks found"}
+
+    synced_tasks = 0
+    synced_events = 0
+
+    for task in tasks:
+        try:
+            t_id = task.get("id")
+            title = task.get("title", "")
+            reminder = task.get("reminder_at")
+            deadline = task.get("deadline")
+            due = reminder or deadline  # prefer reminder_at, fallback to deadline
+
+            # Create Google Task
+            g_tid = await sync_to_google_tasks(user_id, title, due_at=due)
+
+            # Create Calendar event if task has a specific time
+            g_eid = None
+            if due and "T" in str(due):
+                g_eid = await sync_to_calendar(user_id, title, due)
+
+            # Save Google IDs back to Supabase
+            if g_tid or g_eid:
+                updates = {}
+                if g_tid:
+                    updates["google_task_id"] = g_tid
+                    synced_tasks += 1
+                if g_eid:
+                    updates["google_event_id"] = g_eid
+                    synced_events += 1
+                await supabase.table("tasks").update(updates).eq("id", t_id).eq("user_id", user_id).execute()
+
+        except Exception as e:
+            print(f"[BACKFILL] Failed task {task.get('id')}: {e}")
+
+    print(f"[BACKFILL] User {user_id}: {synced_tasks} tasks, {synced_events} events synced")
+    return {"synced_tasks": synced_tasks, "synced_events": synced_events}

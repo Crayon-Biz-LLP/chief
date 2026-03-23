@@ -5,6 +5,7 @@ from .webhook import process_webhook
 from .pulse import process_pulse
 from .whatsapp import process_whatsapp_webhook
 from .auth import handle_google_auth_start, handle_google_auth_callback
+from .google_sync import backfill_tasks_to_google
 import os
 
 app = FastAPI(title="Integrated-OS")
@@ -95,3 +96,16 @@ async def google_auth_callback(request: Request):
 
     html = await handle_google_auth_callback(code, state)
     return HTMLResponse(content=html)
+
+@app.get("/api/auth/google/backfill")
+async def google_backfill(request: Request):
+    """One-time sync: push all existing active tasks to Google Tasks + Calendar."""
+    user_id = request.query_params.get("user")
+    secret = request.query_params.get("secret")
+    env_secret = os.getenv("PULSE_SECRET")
+
+    if not user_id or secret != env_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    result = await backfill_tasks_to_google(user_id)
+    return result
