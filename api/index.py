@@ -1,8 +1,10 @@
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from .webhook import process_webhook
 from .pulse import process_pulse
 from .whatsapp import process_whatsapp_webhook
+from .auth import handle_google_auth_start, handle_google_auth_callback
 import os
 
 app = FastAPI(title="Integrated-OS")
@@ -63,3 +65,33 @@ async def receive_whatsapp_webhook(request: Request):
     update = await request.json()
     await process_whatsapp_webhook(update)
     return {"success": True}
+
+# ─────────────────────────────────────────────
+# GOOGLE OAUTH ROUTES
+# ─────────────────────────────────────────────
+
+@app.get("/api/auth/google")
+async def google_auth_start(request: Request):
+    """User taps link in WhatsApp → redirects to Google consent screen."""
+    user_id = request.query_params.get("user")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Missing user parameter")
+
+    auth_url = await handle_google_auth_start(user_id)
+    if not auth_url:
+        raise HTTPException(status_code=400, detail="Invalid user")
+
+    return RedirectResponse(url=auth_url)
+
+@app.get("/api/auth/google/callback")
+async def google_auth_callback(request: Request):
+    """Google redirects here after user grants permission."""
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    error = request.query_params.get("error")
+
+    if error:
+        return HTMLResponse(content=f"<h1>Authorization denied</h1><p>{error}</p>", status_code=400)
+
+    html = await handle_google_auth_callback(code, state)
+    return HTMLResponse(content=html)

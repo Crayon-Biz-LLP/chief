@@ -1,6 +1,6 @@
 # Chief OS — Supabase Database Schema
 
-> **Last updated:** 2026-03-21
+> **Last updated:** 2026-03-22
 > **Database:** Supabase (PostgreSQL)
 > **RLS:** Enabled on all tables — permissive policies via anon key
 
@@ -34,6 +34,7 @@ Key-value store for per-user state and settings.
 | `initial_people_setup`| `true`                                       | whatsapp   |
 | `last_pulse_at`       | ISO 8601 timestamp (race condition lock)     | pulse      |
 | `_pending_change`     | `schedule` / `mode` / `goal` / `timezone`    | whatsapp   |
+| `google_connected`    | `true`                                       | auth       |
 
 ---
 
@@ -67,6 +68,8 @@ Structured action items extracted by Pulse AI.
 | deadline            | timestamptz  | Optional hard deadline                   |
 | reminder_at         | timestamptz  | Snooze/defer — hide until this time      |
 | completed_at        | timestamptz  | Set when status → `done`                 |
+| google_task_id      | text         | Google Tasks item ID (if synced)         |
+| google_event_id     | text         | Google Calendar event ID (if synced)     |
 | created_at          | timestamptz  | Default `now()`                          |
 
 ---
@@ -142,6 +145,21 @@ Strategic goals (future use — auto-detected from patterns).
 | description | text         | Optional detail                    |
 | status      | text         | `active` / `completed` / `archived` |
 | created_at  | timestamptz  | Default `now()`                    |
+
+---
+
+### `user_google_tokens`
+Per-user OAuth 2.0 tokens for Google Calendar & Tasks integration.
+
+| Column        | Type         | Notes                                   |
+|---------------|--------------|-----------------------------------------|
+| user_id       | text (PK)    | `wa_<phone>` — one token set per user   |
+| access_token  | text         | NOT NULL — short-lived (~1 hour)        |
+| refresh_token | text         | NOT NULL — long-lived, used to refresh  |
+| token_expiry  | timestamptz  | When access_token expires               |
+| scopes        | text         | Granted OAuth scopes                    |
+| created_at    | timestamptz  | Default `now()`                         |
+| updated_at    | timestamptz  | Default `now()`, auto-updated on refresh|
 
 ---
 

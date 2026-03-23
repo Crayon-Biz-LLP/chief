@@ -7,6 +7,10 @@ from datetime import datetime, timedelta, timezone
 from google import genai
 from google.genai import types
 from supabase import create_async_client, AsyncClient
+from .google_sync import (
+    has_google_connection, sync_to_calendar, sync_to_google_tasks,
+    delete_calendar_event,
+)
 
 _genai_client: genai.Client | None = None
 
@@ -401,6 +405,11 @@ async def process_user(user_id: str, is_manual_test: bool):
         if ai_data.get("briefing"):
             briefing = ai_data["briefing"].strip()
             briefing = re.sub(r'\[?ID:\s*\d+\]?', '', briefing, flags=re.IGNORECASE).strip()
+
+            # Add Google connect nudge if not connected
+            if not await has_google_connection(user_id):
+                briefing += "\n\n📅 _Tip: Connect Google Calendar to auto-sync your tasks. Type *settings* to set it up._"
+
             await send_message(user_id, briefing)
 
         # ─── DATABASE WRITES ───
@@ -450,6 +459,8 @@ async def process_user(user_id: str, is_manual_test: bool):
 
         # Task Completions/Cancellations
         completed = ai_data.get("completed_task_ids", [])
+        user_has_google = await has_google_connection(user_id) if completed or new_tasks else False
+
         if completed:
             for item in completed:
                 target_id = item.get('id')
@@ -461,8 +472,25 @@ async def process_user(user_id: str, is_manual_test: bool):
                     updates['completed_at'] = now.isoformat()
                 await supabase.table('tasks').update(updates).eq('id', target_id).eq('user_id', user_id).execute()
 
+                # Google sync: complete task + delete calendar event
+                if user_has_google:
+                    try:
+                        task_ref = await supabase.table('tasks').select('google_task_id, google_event_id').eq('id', target_id).eq('user_id', user_id).limit(1).execute()
+                        if task_ref.data:
+                            g_tid = task_ref.data[0].get('google_task_id')
+                            g_eid = task_ref.data[0].get('google_event_id')
+                            if g_tid:
+                                await sync_to_google_tasks(user_id, "", task_id=g_tid, status=status)
+                            if g_eid:
+                                await delete_calendar_event(user_id, g_eid)
+                                await supabase.table('tasks').update({'google_event_id': None}).eq('id', target_id).eq('user_id', user_id).execute()
+                    except Exception as e:
+                        print(f"[GOOGLE SYNC] Completion sync failed for task {target_id}: {e}")
+
         # New Tasks
         new_tasks = ai_data.get("new_tasks", [])
+        if not user_has_google and new_tasks:
+            user_has_google = await has_google_connection(user_id)
         if new_tasks:
             inserts = []
             for t in new_tasks:
@@ -483,7 +511,34 @@ async def process_user(user_id: str, is_manual_test: bool):
                     'is_revenue_critical': t.get('is_revenue_critical', False),
                 })
             if inserts:
-                await supabase.table('tasks').insert(inserts).execute()
+                result = await supabase.table('tasks').insert(inserts).execute()
+
+                # Google sync: create Google Tasks + Calendar events for new tasks
+                if user_has_google and result.data:
+                    for created_task in result.data:
+                        try:
+                            t_id = created_task.get('id')
+                            t_title = created_task.get('title', '')
+                            t_reminder = created_task.get('reminder_at')
+
+                            # Create Google Task
+                            g_tid = await sync_to_google_tasks(user_id, t_title, due_at=t_reminder)
+
+                            # Create Calendar event if task has a specific time
+                            g_eid = None
+                            if t_reminder and 'T' in str(t_reminder):
+                                g_eid = await sync_to_calendar(user_id, t_title, t_reminder)
+
+                            # Save Google IDs back to Supabase
+                            if g_tid or g_eid:
+                                g_updates = {}
+                                if g_tid:
+                                    g_updates['google_task_id'] = g_tid
+                                if g_eid:
+                                    g_updates['google_event_id'] = g_eid
+                                await supabase.table('tasks').update(g_updates).eq('id', t_id).eq('user_id', user_id).execute()
+                        except Exception as e:
+                            print(f"[GOOGLE SYNC] New task sync failed: {e}")
 
         # Resources (new feature)
         resources = ai_data.get("resources", [])

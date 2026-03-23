@@ -4,6 +4,8 @@ import httpx
 import hashlib
 from datetime import datetime, timezone
 from supabase import create_async_client, AsyncClient
+from .auth import build_google_auth_url
+from .google_sync import has_google_connection
 
 WHATSAPP_API_URL = "https://graph.facebook.com/v22.0"
 
@@ -380,6 +382,13 @@ async def handle_command(pid: str, to: str, user_id: str, command: str):
             await send_text(pid, to, "👥 No stakeholders yet. They'll be auto-detected from your updates.")
 
     elif command in ("settings", "cmd_settings"):
+        # Check if Google is already connected to show the right option
+        google_connected = await has_google_connection(user_id)
+        google_row = (
+            {"id": "set_google", "title": "✅ Google Connected", "description": "Your calendar & tasks are syncing."}
+            if google_connected else
+            {"id": "set_google", "title": "📅 Connect Google", "description": "Sync tasks to Calendar & Google Tasks."}
+        )
         await send_list(pid, to,
             body="⚙️ *SETTINGS*\nWhat would you like to change?",
             button_label="Open Settings",
@@ -388,6 +397,7 @@ async def handle_command(pid: str, to: str, user_id: str, command: str):
                 {"id": "set_mode",     "title": "🎯 Change Mode",      "description": "Switch FIX, GROW, BUILD, or REST."},
                 {"id": "set_goal",     "title": "📝 Change Goal",      "description": "Redefine your 14-day objective."},
                 {"id": "set_timezone", "title": "🌍 Fix Timezone",     "description": "Override auto-detected timezone."},
+                google_row,
                 {"id": "set_reset",    "title": "🔄 Full Reset",       "description": "Wipe config and start fresh."},
             ],
         )
@@ -447,6 +457,23 @@ async def handle_settings_action(pid: str, to: str, user_id: str, action_id: str
             "• 8 → Singapore\n"
             "• 3 → Dubai/Nairobi"
         )
+
+    elif action_id == "set_google":
+        google_connected = await has_google_connection(user_id)
+        if google_connected:
+            await send_text(pid, to,
+                "✅ *Google is already connected!*\n\n"
+                "Your tasks and calendar events are syncing automatically."
+            )
+        else:
+            auth_url = build_google_auth_url(user_id)
+            await send_text(pid, to,
+                "📅 *Connect Google Calendar & Tasks*\n\n"
+                "Tap the link below to grant access. "
+                "Chief will sync your tasks to Google Calendar and Google Tasks automatically.\n\n"
+                f"👉 {auth_url}\n\n"
+                "_You'll be redirected back here once done._"
+            )
 
 
 # ─────────────────────────────────────────────
@@ -641,6 +668,15 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
             user_name = cfg(configs, "user_name") or "there"
             tz = cfg(configs, "timezone_offset") or detect_timezone(to)
             await send_activation(pid, to, user_name, mission_mode, schedule, tz, body)
+
+            # Offer Google Calendar connect after activation
+            auth_url = build_google_auth_url(user_id)
+            await send_text(pid, to,
+                "📅 *One more thing — connect Google?*\n\n"
+                "Chief can auto-sync your tasks to Google Calendar and Google Tasks.\n\n"
+                f"👉 {auth_url}\n\n"
+                "_Optional — you can always do this later from *settings*._"
+            )
         else:
             await send_text(pid, to, "✏️ Please type your main goal for the next 14 days (at least a few words).")
         return
@@ -716,7 +752,7 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
             return
 
     # Handle Settings List Replies
-    if interactive_id in ("set_schedule", "set_mode", "set_goal", "set_timezone", "set_reset"):
+    if interactive_id in ("set_schedule", "set_mode", "set_goal", "set_timezone", "set_google", "set_reset"):
         if interactive_id == "set_reset":
             await handle_command(pid, to, user_id, "reset")
         else:

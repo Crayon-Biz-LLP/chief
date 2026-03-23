@@ -7,6 +7,8 @@ The system operates as a Serverless Python API hosted on **Vercel**. It uses **S
 
 **v2 Changes:** Auto-timezone detection, 3-step onboarding, mission modes, URL enrichment, resource capture, WhatsApp interactive menus.
 
+**v3 Changes:** Google Calendar & Tasks integration with per-user OAuth 2.0.
+
 ---
 
 ## 1. Supabase Database Setup
@@ -23,6 +25,12 @@ Supabase serves as the nervous system for the OS.
 ### New Tables (v2):
 *   `resources` — URLs/links captured from dumps (category, summary, project/mission links)
 *   `missions` — Strategic goals auto-detected from patterns
+
+### New Tables (v3 — Google Integration):
+*   `user_google_tokens` — Per-user OAuth 2.0 tokens (access_token, refresh_token, token_expiry, scopes)
+*   `tasks` columns added: `google_task_id` (text), `google_event_id` (text)
+
+> Run `Docs/MIGRATION_GOOGLE.sql` in Supabase SQL Editor to add the v3 schema.
 
 > Full schema reference: [`Docs/SCHEMA.md`](./SCHEMA.md)
 
@@ -49,6 +57,8 @@ Vercel hosts the serverless Python functions that process incoming webhook event
     *   `PULSE_SECRET` (A custom strong password to protect the `/api/pulse` endpoint)
     *   `INVITE_CODE` (The invite code users must enter to activate — default: `chief2026`)
     *   `ADMIN_CHAT_ID` (Optional — Telegram chat ID for error alerts)
+    *   `GOOGLE_CLIENT_ID` (Google OAuth 2.0 Client ID — from Google Cloud Console)
+    *   `GOOGLE_CLIENT_SECRET` (Google OAuth 2.0 Client Secret — from Google Cloud Console)
 
 *Wait for Vercel to generate your production URL: e.g., `https://chief-three.vercel.app`.*
 
@@ -84,7 +94,36 @@ Vercel goes to sleep when not actively queried. We use GitHub Actions to run a c
 
 ---
 
-## 5. End-to-End Application Flow (v2)
+## 5. Google Calendar & Tasks Integration (v3)
+Enables per-user two-way sync between Chief tasks and Google Calendar + Google Tasks.
+
+### Google Cloud Setup:
+1.  Go to [Google Cloud Console](https://console.cloud.google.com/) → Create or select a project (e.g., "chief OS").
+2.  **Enable APIs:** Enable `Google Calendar API` and `Google Tasks API`.
+3.  **OAuth Consent Screen:** Configure as External, add scopes: `calendar.events`, `tasks`. Add your email as a test user.
+4.  **Credentials:** Create an OAuth 2.0 Client ID (Web application type):
+    *   **Authorized redirect URI:** `https://[YOUR_VERCEL_URL]/api/auth/google/callback`
+5.  Copy the Client ID and Client Secret into Vercel env vars: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`.
+
+### Database Migration:
+Run `Docs/MIGRATION_GOOGLE.sql` in Supabase SQL Editor before deploying.
+
+### How It Works:
+1.  After onboarding (or via *settings* → *📅 Connect Google*), user receives an OAuth link.
+2.  User taps link → Google consent screen → grants Calendar & Tasks permission.
+3.  Callback stores tokens in `user_google_tokens` table.
+4.  During each Pulse cycle:
+    *   **New tasks** → Created as Google Tasks + 30-min Calendar events (if task has a time).
+    *   **Completed tasks** → Marked complete in Google Tasks + Calendar event removed.
+5.  Token refresh is automatic — `get_user_access_token()` refreshes expired tokens using the stored `refresh_token`.
+
+### OAuth Routes:
+*   `GET /api/auth/google?user=wa_xxx` → Redirects to Google consent
+*   `GET /api/auth/google/callback?code=xxx&state=wa_xxx` → Exchanges code for tokens, shows success page
+
+---
+
+## 6. End-to-End Application Flow (v2)
 
 ### Phase 1: WhatsApp Onboarding (3 Steps)
 1.  New user sends any message → Gatekeeper prompts for invite code.
