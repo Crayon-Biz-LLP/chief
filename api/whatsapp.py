@@ -360,18 +360,39 @@ async def handle_command(pid: str, to: str, user_id: str, command: str):
             await send_text(pid, to, "✅ No active fires. You're clear.")
 
     elif command in ("brief", "cmd_brief"):
-        res = await supabase.table("tasks").select("title, priority") \
+        res = await supabase.table("tasks").select("title, priority, status, project_name, reminder_at") \
             .eq("user_id", user_id).eq("status", "todo") \
-            .limit(10).execute()
+            .limit(15).execute()
         tasks = res.data or []
         if tasks:
             order = {"urgent": 0, "important": 1, "chores": 2, "ideas": 3}
-            sorted_t = sorted(tasks, key=lambda t: order.get(t.get("priority", ""), 9))[:5]
+            sorted_t = sorted(tasks, key=lambda t: order.get(t.get("priority", ""), 9))
+
+            # Group by priority
+            urgent = [t for t in sorted_t if t.get("priority") == "urgent"]
+            important = [t for t in sorted_t if t.get("priority") == "important"]
+            rest = [t for t in sorted_t if t.get("priority") not in ("urgent", "important")]
+
             lines = []
-            for t in sorted_t:
-                icon = "[!]" if t["priority"] == "urgent" else "[-]" if t["priority"] == "important" else "[ ]"
-                lines.append(f"{icon} {t['title']}")
-            await send_text(pid, to, "📊 *EXECUTIVE BRIEF:*\n\n" + "\n".join(lines))
+            if urgent:
+                lines.append("🔴 *URGENT*")
+                for t in urgent[:5]:
+                    proj = f" _({t['project_name']})_" if t.get("project_name") else ""
+                    lines.append(f"→ {t['title']}{proj}")
+                lines.append("")
+            if important:
+                lines.append("🟡 *IMPORTANT*")
+                for t in important[:5]:
+                    proj = f" _({t['project_name']})_" if t.get("project_name") else ""
+                    lines.append(f"→ {t['title']}{proj}")
+                lines.append("")
+            if rest:
+                lines.append("📋 *OTHER*")
+                for t in rest[:5]:
+                    lines.append(f"→ {t['title']}")
+
+            header = f"📊 *EXECUTIVE BRIEF* — {len(tasks)} active task{'s' if len(tasks) != 1 else ''}\n"
+            await send_text(pid, to, header + "\n".join(lines))
         else:
             await send_text(pid, to, "📭 Task list is empty. Send me some thoughts to get started!")
 

@@ -212,7 +212,7 @@ Rules:
             "entity": "INBOX",
             "title": text[:120],
             "time_context": "",
-            "receipt": f"[DBG] {str(e)[:150]}",
+            "receipt": "Got it.",
             "reasoning": f"Classification error: {e}",
         }
 
