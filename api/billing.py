@@ -378,7 +378,8 @@ async def admin_update_subscription(
         updates["expires_at"] = new_expiry.isoformat()
         updates["status"] = "active"
 
-    if set_expires:
+    elif set_expires:
+        # Only apply manual expiry if add_days wasn't used (add_days takes priority)
         updates["expires_at"] = set_expires
         try:
             exp = datetime.fromisoformat(set_expires.replace("Z", "+00:00"))

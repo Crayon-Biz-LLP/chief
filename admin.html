@@ -836,8 +836,12 @@ async function saveUser(userId) {
   const notes = document.getElementById('edit-notes').value;
 
   const body = { plan, status, notes };
-  if (addDays > 0) body.add_days = addDays;
-  if (expiry) body.set_expires = new Date(expiry).toISOString();
+  if (addDays > 0) {
+    body.add_days = addDays;
+    // Don't send set_expires when extending by days — add_days takes priority
+  } else if (expiry) {
+    body.set_expires = new Date(expiry).toISOString();
+  }
 
   try {
     await api(`/users/${encodeURIComponent(userId)}`, 'PUT', body);
