@@ -206,13 +206,14 @@ Rules:
 
     except Exception as e:
         print(f"[CLASSIFY ERROR] user={user_id}: {e}")
+        err_msg = str(e)[:200]
         return {
             "intent": "TASK",  # Fail-safe: treat as task to avoid data loss
             "confidence": 0.3,
             "entity": "INBOX",
             "title": text[:120],
             "time_context": "",
-            "receipt": "Got it.",
+            "receipt": f"Got it. [DEBUG: {err_msg}]",
             "reasoning": f"Classification error: {e}",
         }
 
