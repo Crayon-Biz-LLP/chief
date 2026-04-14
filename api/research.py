@@ -23,7 +23,7 @@ from .pulse import send_message  # Re-use the unified notification router
 # CONSTANTS
 # ─────────────────────────────────────────────
 
-SYNTHESIS_MODEL = "gemini-2.0-flash-lite"
+SYNTHESIS_MODEL = "gemini-2.0-flash"
 JINA_BASE_URL = "https://s.jina.ai"
 
 # ─────────────────────────────────────────────

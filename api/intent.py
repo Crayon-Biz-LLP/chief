@@ -23,7 +23,7 @@ from google.genai import types
 # CONSTANTS
 # ─────────────────────────────────────────────
 
-CLASSIFICATION_MODEL = "gemini-2.0-flash-lite"
+CLASSIFICATION_MODEL = "gemini-2.0-flash"
 
 # Persona definitions map to user's chosen identity setting
 PERSONA_MAP = {
@@ -206,14 +206,13 @@ Rules:
 
     except Exception as e:
         print(f"[CLASSIFY ERROR] user={user_id}: {e}")
-        err_msg = str(e)[:200]
         return {
-            "intent": "TASK",  # Fail-safe: treat as task to avoid data loss
+            "intent": "TASK",
             "confidence": 0.3,
             "entity": "INBOX",
             "title": text[:120],
             "time_context": "",
-            "receipt": f"Got it. [DEBUG: {err_msg}]",
+            "receipt": "Got it.",
             "reasoning": f"Classification error: {e}",
         }
 
