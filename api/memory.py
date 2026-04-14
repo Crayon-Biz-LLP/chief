@@ -26,7 +26,7 @@ from google.genai import types
 
 EMBEDDING_MODEL = "gemini-embedding-2-preview"
 EMBEDDING_DIMENSION = 768
-LITE_MODEL = "gemini-2.0-flash"
+LITE_MODEL = "gemini-3.1-flash-lite-preview"
 
 # ─────────────────────────────────────────────
 # SINGLETONS (cold-start safe for Vercel serverless)

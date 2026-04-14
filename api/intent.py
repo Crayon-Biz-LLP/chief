@@ -23,7 +23,7 @@ from google.genai import types
 # CONSTANTS
 # ─────────────────────────────────────────────
 
-CLASSIFICATION_MODEL = "gemini-2.0-flash"
+CLASSIFICATION_MODEL = "gemini-3.1-flash-lite-preview"
 
 # Persona definitions map to user's chosen identity setting
 PERSONA_MAP = {
@@ -212,7 +212,7 @@ Rules:
             "entity": "INBOX",
             "title": text[:120],
             "time_context": "",
-            "receipt": "Got it.",
+            "receipt": f"[DBG] {str(e)[:150]}",
             "reasoning": f"Classification error: {e}",
         }
 
