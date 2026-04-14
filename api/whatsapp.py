@@ -988,7 +988,7 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
             await send_text(pid, to, f"✅ {receipt}")
 
         elif intent == "QUERY" and confidence >= 0.5:
-            await send_text(pid, to, "� _Searching your vault..._")
+            await send_text(pid, to, "🧠 _Searching your vault..._")
             answer = await interrogate_brain(user_id, body)
             await send_text(pid, to, f"🧠 {answer}")
 

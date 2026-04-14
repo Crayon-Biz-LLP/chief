@@ -17,6 +17,7 @@ from typing import Optional
 
 from supabase import create_async_client, AsyncClient
 from google import genai
+from google.genai import types
 
 # ─────────────────────────────────────────────
 # CONSTANTS
@@ -186,7 +187,9 @@ Rules:
         response = await client.aio.models.generate_content(
             model=CLASSIFICATION_MODEL,
             contents=prompt,
-            config={"response_mime_type": "application/json"},
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+            ),
         )
         result = json.loads(response.text)
 
@@ -254,7 +257,9 @@ async def classify_dumps_batch(dumps: list[dict]) -> dict[str, list[int]]:
         response = await client.aio.models.generate_content(
             model=CLASSIFICATION_MODEL,
             contents=prompt,
-            config={"response_mime_type": "application/json"},
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+            ),
         )
         classifications = json.loads(response.text)
 
@@ -330,7 +335,9 @@ async def extract_multimodal_content(
         response = await client.aio.models.generate_content(
             model=CLASSIFICATION_MODEL,
             contents=content_parts,
-            config={"response_mime_type": "application/json"},
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+            ),
         )
 
         return json.loads(response.text)

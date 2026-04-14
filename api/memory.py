@@ -18,6 +18,7 @@ from typing import Optional
 
 from supabase import create_async_client, AsyncClient
 from google import genai
+from google.genai import types
 
 # ─────────────────────────────────────────────
 # CONSTANTS
@@ -354,7 +355,9 @@ async def extract_and_store_graph(user_id: str, text: str, memory_id: int | None
         response = await client.aio.models.generate_content(
             model=LITE_MODEL,
             contents=prompt,
-            config={"response_mime_type": "application/json"},
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+            ),
         )
 
         graph_data = json.loads(response.text)
@@ -571,7 +574,9 @@ async def batch_enrich_resources(user_id: str) -> list[dict]:
         response = await client.aio.models.generate_content(
             model=LITE_MODEL,
             contents=prompt,
-            config={"response_mime_type": "application/json"},
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+            ),
         )
         parsed = json.loads(response.text)
 
