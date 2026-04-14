@@ -1,10 +1,14 @@
 import os
 import re
+import json
 import httpx
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from supabase import create_async_client, AsyncClient
 from .google_sync import has_google_connection
+from .intent import classify_intent, extract_multimodal_content
+from .memory import store_memory, interrogate_brain, extract_and_store_graph
+from .billing import check_access, record_usage
 
 WHATSAPP_API_URL = "https://graph.facebook.com/v22.0"
 
@@ -164,6 +168,29 @@ async def mark_read(pid: str, message_id: str):
     })
 
 
+async def download_whatsapp_media(media_id: str) -> tuple[bytes, str]:
+    """Download media from WhatsApp Cloud API. Returns (file_bytes, mime_type)."""
+    access_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            # Step 1: Get media URL
+            info_resp = await client.get(
+                f"{WHATSAPP_API_URL}/{media_id}", headers=headers
+            )
+            info = info_resp.json()
+            media_url = info.get("url", "")
+            mime_type = info.get("mime_type", "application/octet-stream")
+            if not media_url:
+                raise Exception(f"No media URL in response: {info}")
+            # Step 2: Download the file
+            dl_resp = await client.get(media_url, headers=headers)
+            return dl_resp.content, mime_type
+    except Exception as e:
+        print(f"[WA MEDIA ERROR] {e}")
+        raise
+
+
 # ─────────────────────────────────────────────
 # SUPABASE CONFIG HELPERS
 # ─────────────────────────────────────────────
@@ -299,7 +326,7 @@ async def send_activation(pid: str, to: str, user_name: str, mission: str, sched
 COMMAND_KEYWORDS = {
     "menu", "help", "commands",
     "urgent", "brief", "goal", "vault", "people",
-    "settings", "reset",
+    "settings", "reset", "mission", "library",
 }
 
 
@@ -311,7 +338,9 @@ async def send_command_menu(pid: str, to: str):
             {"id": "cmd_urgent",   "title": "🔥 Urgent",   "description": "Your #1 fire right now."},
             {"id": "cmd_brief",    "title": "📊 Brief",    "description": "Top 5 active tasks."},
             {"id": "cmd_goal",     "title": "🎯 Goal",     "description": "Your current 14-day target."},
-            {"id": "cmd_vault",    "title": "💭 Vault",    "description": "Last 5 raw thoughts captured."},
+            {"id": "cmd_vault",    "title": "💭 Vault",    "description": "Last 5 memories & notes."},
+            {"id": "cmd_mission",  "title": "🚀 Mission",  "description": "View or create strategic missions."},
+            {"id": "cmd_library",  "title": "📚 Library",  "description": "Your saved links & resources."},
             {"id": "cmd_people",   "title": "👥 People",   "description": "Your registered stakeholders."},
             {"id": "cmd_settings", "title": "⚙️ Settings", "description": "Change schedule, goal, or mode."},
         ],
@@ -357,19 +386,52 @@ async def handle_command(pid: str, to: str, user_id: str, command: str):
         await send_text(pid, to, text)
 
     elif command in ("vault", "cmd_vault"):
-        res = await supabase.table("raw_dumps").select("content, created_at") \
-            .eq("user_id", user_id) \
-            .order("created_at", desc=True).limit(5).execute()
-        items = res.data or []
-        if items:
+        # Show memories (notes + reflections) instead of just raw dumps
+        mem_res = await supabase.table("memories").select("content, memory_type, created_at") \
+            .eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
+        mems = mem_res.data or []
+        if mems:
             lines = []
-            for i in items:
-                ts = datetime.fromisoformat(i["created_at"].replace("Z", "+00:00")).strftime("%b %d, %I:%M%p")
-                preview = i["content"][:120] + ("..." if len(i["content"]) > 120 else "")
-                lines.append(f"_{ts}:_ {preview}")
+            for m in mems:
+                ts = datetime.fromisoformat(m["created_at"].replace("Z", "+00:00")).strftime("%b %d")
+                icon = "💡" if m["memory_type"] == "note" else "📝"
+                preview = m["content"][:150] + ("..." if len(m["content"]) > 150 else "")
+                lines.append(f"{icon} _{ts}:_ {preview}")
             await send_text(pid, to, "💭 *VAULT (Last 5):*\n\n" + "\n\n".join(lines))
         else:
-            await send_text(pid, to, "💭 Vault is empty. Start sending your thoughts!")
+            # Fallback to raw_dumps
+            res = await supabase.table("raw_dumps").select("content, created_at") \
+                .eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
+            items = res.data or []
+            if items:
+                lines = []
+                for i in items:
+                    ts = datetime.fromisoformat(i["created_at"].replace("Z", "+00:00")).strftime("%b %d, %I:%M%p")
+                    preview = i["content"][:120] + ("..." if len(i["content"]) > 120 else "")
+                    lines.append(f"_{ts}:_ {preview}")
+                await send_text(pid, to, "💭 *VAULT (Last 5):*\n\n" + "\n\n".join(lines))
+            else:
+                await send_text(pid, to, "💭 Vault is empty. Send notes starting with N: to fill it!")
+
+    elif command in ("mission", "cmd_mission"):
+        m_res = await supabase.table("missions").select("title, status") \
+            .eq("user_id", user_id).eq("status", "active").execute()
+        missions = m_res.data or []
+        if missions:
+            m_lines = [f"• {m['title']}" for m in missions]
+            await send_text(pid, to, "🚀 *ACTIVE MISSIONS:*\n\n" + "\n".join(m_lines))
+        else:
+            await send_text(pid, to, "🚀 No active missions. Type 'mission: [Goal]' to declare one.")
+
+    elif command in ("library", "cmd_library"):
+        lib_res = await supabase.table("resources").select("title, url, category") \
+            .eq("user_id", user_id).order("created_at", desc=True).limit(10).execute()
+        items = lib_res.data or []
+        if items:
+            lines = [f"🔖 {i.get('title') or 'Untitled'}\n   {i.get('url', '')}" for i in items]
+            await send_text(pid, to, "📚 *RESOURCE LIBRARY (Last 10):*\n\n" + "\n\n".join(lines))
+        else:
+            await send_text(pid, to, "📚 Library is empty. Send URLs and I'll save them.")
 
     elif command in ("people", "cmd_people"):
         res = await supabase.table("people").select("name, role").eq("user_id", user_id).execute()
@@ -519,9 +581,12 @@ async def process_whatsapp_webhook(update: dict):
                         elif itype == "list_reply":
                             interactive_id = interactive.get("list_reply", {}).get("id", "")
                             body = interactive.get("list_reply", {}).get("title", "")
+                    elif msg_type in ("image", "audio", "voice", "document"):
+                        # Caption text (images/documents can have captions)
+                        body = message.get(msg_type, {}).get("caption", "").strip()
                     else:
                         await send_text(phone_number_id, from_number,
-                            "📝 I only process text right now. Type your thought as a message.")
+                            "📝 I only process text and media right now.")
                         continue
 
                     # Blue ticks
@@ -538,6 +603,8 @@ async def process_whatsapp_webhook(update: dict):
                         body=body,
                         interactive_id=interactive_id,
                         value=value,
+                        msg_type=msg_type,
+                        message=message,
                     )
 
     except Exception as e:
@@ -552,7 +619,7 @@ async def process_whatsapp_webhook(update: dict):
 #   2. ONBOARDING -- Mission Mode -> Schedule -> Goal (tz auto)
 #   3. ACTIVE -- Capture + Commands + Settings
 
-async def handle_message(pid: str, to: str, user_id: str, body: str, interactive_id: str, value: dict):
+async def handle_message(pid: str, to: str, user_id: str, body: str, interactive_id: str, value: dict, msg_type: str = "text", message: dict | None = None):
     supabase = await get_supabase()
     lower = body.lower().strip() if body else ""
 
@@ -687,13 +754,15 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
     if not setup_done:
         await set_config(user_id, "initial_people_setup", "true")
 
-    # Trial Expiry
-    if await is_trial_expired(user_id):
-        await send_text(pid, to,
-            "⏳ Your 14-day sprint has concluded.\n\n"
-            "Contact your admin to continue using Chief."
-        )
+    # ── Access Control (replaces hardcoded 14-day trial) ──
+    access = await check_access(user_id)
+    if not access["allowed"]:
+        reason = access.get("reason", "Your plan has expired. Contact your admin.")
+        await send_text(pid, to, f"⏳ {reason}")
         return
+
+    # Record inbound usage
+    await record_usage(user_id, "message_in", channel="whatsapp")
 
     # Handle Pending Settings Changes
     if pending:
@@ -772,26 +841,197 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
         return
 
     # ===========================================================
-    # CAPTURE MODE (Default -- raw brain dump)
+    # BRAIN INTERROGATION — ?query syntax
+    # ===========================================================
+    if lower.startswith("?"):
+        query = body[1:].strip()
+        if query:
+            await send_text(pid, to, "🧠 _Searching your vault..._")
+            answer = await interrogate_brain(user_id, query)
+            await send_text(pid, to, f"🧠 {answer}")
+            await record_usage(user_id, "brain_query", channel="whatsapp")
+        else:
+            await send_text(pid, to, "Send a question after ? to search your vault.")
+        return
+
+    # ===========================================================
+    # EXPLICIT NOTE CAPTURE — N: or Note: prefix
+    # ===========================================================
+    if lower.startswith("n:") or lower.startswith("note:"):
+        note_content = body.split(":", 1)[1].strip()
+        if note_content:
+            mem_id = await store_memory(user_id, note_content, memory_type="note")
+            if mem_id:
+                try:
+                    await extract_and_store_graph(user_id, note_content, memory_id=mem_id)
+                except Exception:
+                    pass
+            await send_text(pid, to, "📝 Note vaulted.")
+        else:
+            await send_text(pid, to, "Type your note after N: — e.g., N: The client prefers a phased rollout")
+        return
+
+    # ===========================================================
+    # MISSION CREATION — mission: [goal] syntax
+    # ===========================================================
+    if lower.startswith("mission:") or lower.startswith("/mission "):
+        mission_text = body.split(":", 1)[1].strip() if ":" in body else body.replace("/mission ", "").strip()
+        if mission_text and len(mission_text) >= 5:
+            try:
+                await supabase.table("missions").insert({
+                    "user_id": user_id, "title": mission_text, "status": "active"
+                }).execute()
+                await send_text(pid, to, f"🚀 *Mission declared:* {mission_text}")
+            except Exception:
+                await send_text(pid, to, "❌ Error creating mission.")
+        else:
+            await send_text(pid, to, "Type 'mission: [Your strategic goal]' to declare one.")
+        return
+
+    # ===========================================================
+    # MULTIMODAL INPUT — Images, Audio, Documents
+    # ===========================================================
+    if not body and msg_type in ("image", "audio", "voice", "document"):
+        msg = message or {}
+        media_id = None
+        media_label = ""
+
+        if msg_type == "image":
+            media_id = msg.get("image", {}).get("id")
+            media_label = "image"
+        elif msg_type in ("audio", "voice"):
+            media_id = msg.get(msg_type, {}).get("id")
+            media_label = "audio"
+        elif msg_type == "document":
+            media_id = msg.get("document", {}).get("id")
+            doc_mime = msg.get("document", {}).get("mime_type", "")
+            if doc_mime in ("application/pdf",) or doc_mime.startswith("text/"):
+                media_label = "document"
+                media_label = "document"
+            else:
+                await send_text(pid, to, "⚠️ Unsupported file type. Send as PDF, image, or voice.")
+                return
+
+        if media_id and media_label:
+            await send_text(pid, to, f"📎 Processing {media_label}...")
+            try:
+                file_bytes, mime = await download_whatsapp_media(media_id)
+
+                identity_val = cfg(configs, "identity") or "1"
+                goal_val = cfg(configs, "current_season") or ""
+                tz_val = float(cfg(configs, "timezone_offset") or "0")
+
+                extracted = await extract_multimodal_content(
+                    file_bytes, mime, user_id,
+                    identity=identity_val, goal=goal_val, tz_offset=tz_val,
+                )
+
+                task_count = 0
+                note_count = 0
+                for item in extracted:
+                    item_type = (item.get("type") or "").upper()
+                    content = item.get("content", "")
+                    if not content:
+                        continue
+                    if item_type == "TASK":
+                        await supabase.table("raw_dumps").insert(
+                            [{"user_id": user_id, "content": content, "source": "wa_media"}]
+                        ).execute()
+                        task_count += 1
+                    elif item_type == "NOTE":
+                        await store_memory(user_id, content, memory_type="note")
+                        note_count += 1
+                    elif item_type == "DELEGATE":
+                        await supabase.table("agent_queue").insert({
+                            "user_id": user_id, "task": content, "status": "pending"
+                        }).execute()
+
+                parts = []
+                if task_count:
+                    parts.append(f"{task_count} task{'s' if task_count != 1 else ''}")
+                if note_count:
+                    parts.append(f"{note_count} note{'s' if note_count != 1 else ''}")
+                summary = " & ".join(parts) if parts else "Content"
+                await send_text(pid, to, f"✅ Logged {summary}.")
+                await record_usage(user_id, "media_process", channel="whatsapp")
+            except Exception as e:
+                print(f"[WA MULTIMODAL ERROR] user={user_id}: {e}")
+                await send_text(pid, to, "⚠️ Couldn't process that file. Try sending as text.")
+            return
+
+    # ===========================================================
+    # SMART CAPTURE — Intent Classification (Default)
     # ===========================================================
     if body:
-        await supabase.table("raw_dumps").insert(
-            [{"user_id": user_id, "content": body, "source": "whatsapp"}]
-        ).execute()
+        identity_val = cfg(configs, "identity") or "1"
+        goal_val = cfg(configs, "current_season") or ""
+        tz_val = float(cfg(configs, "timezone_offset") or "0")
 
-        # Varied acknowledgments so it feels like a conversation
-        acks = [
-            "🤖 Got it!",
-            "🤖 Noted, keep going.",
-            "🤖 Heard you. Anything else?",
-            "🤖 On it.",
-            "🤖 Saved. What else?",
-            "🤖 Got that down.",
-            "🤖 Okay, noted!",
-            "🤖 Understood.",
-            "🤖 Makes sense. Keep going!",
-            "🤖 Gotcha. What's next?",
-        ]
-        # Deterministic rotation based on message content hash
-        idx = int(hashlib.md5(body.encode()).hexdigest(), 16) % len(acks)
-        await send_text(pid, to, acks[idx])
+        classification = await classify_intent(
+            text=body,
+            user_id=user_id,
+            identity=identity_val,
+            goal=goal_val,
+            tz_offset=tz_val,
+        )
+
+        intent = classification.get("intent", "TASK")
+        confidence = classification.get("confidence", 0.5)
+        receipt = classification.get("receipt", "Got it.")
+
+        print(f"[WA CLASSIFY] user={user_id} intent={intent} ({confidence:.0%}) — {body[:60]}...")
+
+        if intent == "TASK" and confidence >= 0.5:
+            await supabase.table("raw_dumps").insert(
+                [{"user_id": user_id, "content": body, "source": "whatsapp"}]
+            ).execute()
+            await send_text(pid, to, f"✅ {receipt}")
+
+        elif intent == "QUERY" and confidence >= 0.5:
+            await send_text(pid, to, "� _Searching your vault..._")
+            answer = await interrogate_brain(user_id, body)
+            await send_text(pid, to, f"🧠 {answer}")
+
+        elif intent == "NOTE" and confidence >= 0.5:
+            if re.match(r"https?://", body.strip()):
+                await supabase.table("resources").insert({
+                    "user_id": user_id,
+                    "url": body.strip(),
+                    "title": classification.get("title", "New Resource"),
+                    "category": "LINK",
+                }).execute()
+                await send_text(pid, to, "🔖 Resource saved to Library.")
+            else:
+                mem_id = await store_memory(user_id, body, memory_type="note")
+                if mem_id:
+                    try:
+                        await extract_and_store_graph(user_id, body, memory_id=mem_id)
+                    except Exception:
+                        pass
+                await send_text(pid, to, f"📝 {receipt}")
+
+        elif intent == "DELEGATE":
+            await supabase.table("agent_queue").insert({
+                "user_id": user_id, "task": body, "status": "pending"
+            }).execute()
+            await send_text(pid, to, f"🔍 {receipt}")
+
+        elif intent == "NOISE":
+            await supabase.table("raw_dumps").insert(
+                [{"user_id": user_id, "content": body, "source": "whatsapp"}]
+            ).execute()
+            await send_text(pid, to, "👍")
+
+        elif intent == "CLARIFICATION_NEEDED":
+            await supabase.table("raw_dumps").insert(
+                [{"user_id": user_id, "content": body, "source": "whatsapp"}]
+            ).execute()
+            question = classification.get("reasoning", "Could you provide more details?")
+            await send_text(pid, to, f"🤔 {receipt}\n\n{question}")
+
+        else:
+            # Fail-safe: treat as task to avoid data loss
+            await supabase.table("raw_dumps").insert(
+                [{"user_id": user_id, "content": body, "source": "whatsapp"}]
+            ).execute()
+            await send_text(pid, to, f"✅ {receipt}")

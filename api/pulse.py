@@ -11,6 +11,13 @@ from .google_sync import (
     has_google_connection, sync_to_calendar, sync_to_google_tasks,
     delete_calendar_event,
 )
+from .memory import (
+    store_memory, retrieve_hindsight, hybrid_search_graph,
+    batch_enrich_resources, generate_after_action_report,
+    get_embedding_async,
+)
+from .intent import classify_dumps_batch
+from .billing import record_usage
 
 _genai_client: genai.Client | None = None
 
@@ -181,7 +188,7 @@ async def process_user(user_id: str, is_manual_test: bool):
         dumps_response = await supabase.table('raw_dumps').select('id, content').eq('user_id', user_id).eq('is_processed', False).execute()
         dumps = dumps_response.data or []
 
-        tasks_response = await supabase.table('tasks').select('id, title, priority, project_id, created_at, is_revenue_critical, deadline').eq('user_id', user_id).neq('status', 'done').neq('status', 'cancelled').execute()
+        tasks_response = await supabase.table('tasks').select('id, title, priority, project_id, created_at, is_revenue_critical, deadline, reminder_at, duration_mins').eq('user_id', user_id).neq('status', 'done').neq('status', 'cancelled').execute()
         tasks = tasks_response.data or []
 
         people_response = await supabase.table('people').select('name, role, strategic_weight').eq('user_id', user_id).execute()
@@ -211,6 +218,72 @@ async def process_user(user_id: str, is_manual_test: bool):
 
         await supabase.table('core_config').delete().eq('user_id', user_id).eq('key', 'last_pulse_at').execute()
         await supabase.table('core_config').insert([{'user_id': user_id, 'key': 'last_pulse_at', 'content': now.isoformat()}]).execute()
+
+        # ─── STAGING AREA SORTER (Pre-classify dumps) ───
+        if dumps:
+            try:
+                sort_result = await classify_dumps_batch(dumps)
+                note_ids = sort_result.get("note_ids", [])
+                noise_ids = sort_result.get("noise_ids", [])
+                task_ids = sort_result.get("task_ids", [])
+
+                # Route notes directly to semantic memory
+                for d in dumps:
+                    if d["id"] in note_ids:
+                        await store_memory(user_id, d["content"], memory_type="note")
+
+                # Mark notes + noise as processed
+                skip_ids = note_ids + noise_ids
+                if skip_ids:
+                    await supabase.table('raw_dumps').update({'is_processed': True}).in_('id', skip_ids).execute()
+                    print(f"[STAGING] user={user_id}: {len(task_ids)} tasks, {len(note_ids)} notes, {len(noise_ids)} noise")
+
+                # Keep only task dumps for the main AI prompt
+                dumps = [d for d in dumps if d["id"] in task_ids]
+            except Exception as e:
+                print(f"[STAGING ERROR] user={user_id}: {e}")
+
+        # ─── BATCH RESOURCE ENRICHMENT ───
+        enrichment_results = []
+        try:
+            enrichment_results = await batch_enrich_resources(user_id)
+        except Exception as e:
+            print(f"[ENRICH ERROR] user={user_id}: {e}")
+
+        # ─── HINDSIGHT MEMORY RETRIEVAL ───
+        hindsight_context = "None"
+        hindsight_stale = False
+        task_inputs = [d['content'] for d in dumps] if dumps else []
+        try:
+            if task_inputs or tasks:
+                hindsight_lines, hindsight_stale = await retrieve_hindsight(
+                    user_id, task_inputs, tasks, top_k=5
+                )
+                if hindsight_lines:
+                    hindsight_context = "\n".join(hindsight_lines)
+                    print(f"[HINDSIGHT] user={user_id}: {len(hindsight_lines)} memories retrieved")
+        except Exception as e:
+            print(f"[HINDSIGHT ERROR] user={user_id}: {e}")
+
+        # ─── GRAPH CONTEXT ───
+        graph_context = "None"
+        try:
+            if task_inputs:
+                combined_input = " ".join(task_inputs[:3])[:100]
+                graph_ctx = await hybrid_search_graph(user_id, combined_input)
+                if graph_ctx:
+                    graph_context = graph_ctx
+        except Exception as e:
+            print(f"[GRAPH ERROR] user={user_id}: {e}")
+
+        # ─── ENRICHED RESOURCES CONTEXT ───
+        newly_enriched_context = "None"
+        if enrichment_results:
+            enriched_lines = [
+                f"[{r.get('category', 'LINK')}] {r.get('strategic_note', '')}"
+                for r in enrichment_results
+            ]
+            newly_enriched_context = " | ".join(enriched_lines)
 
         # ─── TIME & DAY INTELLIGENCE ───
         is_weekend = day in [5, 6]
@@ -242,11 +315,36 @@ async def process_user(user_id: str, is_manual_test: bool):
                 briefing_mode = "IDEAS: REFLECTION"
                 system_persona = "Relaxed reflection. Log ideas and observations. Prep for rest."
 
-        # ─── TASK FILTERING ───
+        # ─── TASK FILTERING (with Horizon Gate) ───
         is_overloaded = len(tasks) > 15
+        horizon_cutoff = local_date + timedelta(days=2)
+        two_weeks_ago = local_date - timedelta(days=14)
 
         filtered_tasks = []
         for t in tasks:
+            # Horizon Gate: skip tasks with reminder > 48h away
+            raw_reminder = t.get('deadline') or t.get('reminder_at')
+            if raw_reminder:
+                try:
+                    remind_dt = datetime.fromisoformat(str(raw_reminder).replace(' ', 'T').replace('Z', '+00:00'))
+                    if remind_dt.tzinfo is None:
+                        remind_dt = remind_dt.replace(tzinfo=timezone.utc)
+                    if remind_dt > horizon_cutoff:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
+            # Creation window: skip tasks older than 14 days (unless urgent)
+            if t.get('priority', '').lower() != 'urgent':
+                created_str = t.get('created_at', '')
+                if created_str:
+                    try:
+                        created_dt = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
+                        if created_dt < two_weeks_ago:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+
             if t.get('priority', '').lower() == 'urgent':
                 filtered_tasks.append(t)
                 continue
@@ -310,6 +408,13 @@ async def process_user(user_id: str, is_manual_test: bool):
         MONDAY_REENTRY: {'TRUE' if is_monday_morning else 'FALSE'}
         STAGNANT URGENT TASKS: {json.dumps(overdue_tasks)}
         PERSONA GUIDELINE: {system_persona}
+        HINDSIGHT_STALE: {'TRUE' if hindsight_stale else 'FALSE'}
+
+        HINDSIGHT CONTEXT (Past lessons relevant to current inputs):
+        {hindsight_context}
+
+        KNOWLEDGE GRAPH (Relationships between entities):
+        {graph_context}
 
         CONTEXT:
         - PROJECTS: {projects_names}
@@ -317,6 +422,7 @@ async def process_user(user_id: str, is_manual_test: bool):
         - OPEN TASKS (FILTERED FOR TIME-OF-DAY): {compressed_tasks_str}
         - ALL TASKS (FOR COMPLETION MATCHING): {universal_task_map}
         - ENRICHED WEB LINKS: {link_context}
+        - NEWLY ENRICHED RESOURCES: {newly_enriched_context}
         - NEW RAW INPUTS: {dumps_text}
 
         INSTRUCTIONS:
@@ -411,6 +517,7 @@ async def process_user(user_id: str, is_manual_test: bool):
                 briefing += "\n\n📅 _Tip: Connect Google Calendar to auto-sync your tasks. Type *settings* to set it up._"
 
             await send_message(user_id, briefing)
+            await record_usage(user_id, "pulse", channel="system")
 
         # ─── DATABASE WRITES ───
 
@@ -573,6 +680,13 @@ async def process_user(user_id: str, is_manual_test: bool):
                 'content': l.get('content', '')
             } for l in logs]
             await supabase.table('logs').insert(inserts).execute()
+
+        # ─── AFTER-ACTION REPORT (end of day) ───
+        if hour >= 20 or hour < 4:
+            try:
+                await generate_after_action_report(user_id, local_date)
+            except Exception as e:
+                print(f"[AAR ERROR] user={user_id}: {e}")
 
     except Exception as e:
         print(f"[CRITICAL] User {user_id}: {str(e)}")

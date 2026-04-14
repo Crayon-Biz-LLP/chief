@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chief OS — Admin Panel</title>
+<style>
+/* ═══════════════════════════════════════════
+   DESIGN SYSTEM
+   ═══════════════════════════════════════════ */
+:root {
+  --bg: #09090b;
+  --surface: #18181b;
+  --surface-2: #27272a;
+  --border: #3f3f46;
+  --text: #fafafa;
+  --text-muted: #a1a1aa;
+  --accent: #facc15;
+  --accent-dim: rgba(250,204,21,0.15);
+  --green: #4ade80;
+  --red: #f87171;
+  --blue: #60a5fa;
+  --orange: #fb923c;
+  --purple: #c084fc;
+  --radius: 10px;
+  --shadow: 0 1px 3px rgba(0,0,0,.5);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+/* ─── LAYOUT ─── */
+.app { display: flex; min-height: 100vh; }
+
+.sidebar {
+  width: 240px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 1.5rem 1rem;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-logo {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sidebar-nav { display: flex; flex-direction: column; gap: 4px; }
+
+.nav-item {
+  padding: 0.6rem 0.8rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  transition: all 0.15s;
+  border: none;
+  background: none;
+  text-align: left;
+  width: 100%;
+}
+
+.nav-item:hover { background: var(--surface-2); color: var(--text); }
+.nav-item.active { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.main { flex: 1; padding: 2rem; overflow-y: auto; }
+
+/* ─── HEADER ─── */
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.page-title { font-size: 1.5rem; font-weight: 700; }
+
+.header-actions { display: flex; gap: 0.5rem; }
+
+/* ─── STAT CARDS ─── */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.2rem;
+  box-shadow: var(--shadow);
+}
+
+.stat-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.stat-value { font-size: 2rem; font-weight: 700; margin-top: 0.3rem; }
+.stat-sub { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem; }
+
+/* ─── TABLE ─── */
+.table-container {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+
+.table-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.2rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.table-title { font-weight: 600; }
+
+.search-input {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.4rem 0.8rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  width: 220px;
+  outline: none;
+}
+
+.search-input:focus { border-color: var(--accent); }
+
+table { width: 100%; border-collapse: collapse; }
+
+thead th {
+  text-align: left;
+  padding: 0.75rem 1.2rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+tbody td {
+  padding: 0.75rem 1.2rem;
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+tbody tr:hover { background: rgba(255,255,255,0.02); }
+tbody tr:last-child td { border-bottom: none; }
+
+/* ─── BADGES ─── */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.badge-active { background: rgba(74,222,128,0.15); color: var(--green); }
+.badge-expired { background: rgba(248,113,113,0.15); color: var(--red); }
+.badge-suspended { background: rgba(251,146,60,0.15); color: var(--orange); }
+.badge-trial { background: rgba(96,165,250,0.15); color: var(--blue); }
+.badge-pro { background: rgba(250,204,21,0.15); color: var(--accent); }
+.badge-unlimited { background: rgba(192,132,252,0.15); color: var(--purple); }
+.badge-whatsapp { background: rgba(74,222,128,0.1); color: var(--green); }
+.badge-telegram { background: rgba(96,165,250,0.1); color: var(--blue); }
+
+/* ─── BUTTONS ─── */
+.btn {
+  padding: 0.4rem 0.9rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  transition: all 0.15s;
+}
+
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+
+.btn-primary {
+  background: var(--accent);
+  color: #000;
+  border-color: var(--accent);
+}
+
+.btn-primary:hover { background: #eab308; }
+
+.btn-danger {
+  background: transparent;
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.btn-danger:hover { background: rgba(248,113,113,0.15); }
+
+.btn-sm { padding: 0.25rem 0.6rem; font-size: 0.75rem; }
+
+/* ─── MODAL ─── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+
+.modal-overlay.open { opacity: 1; pointer-events: all; }
+
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  min-width: 420px;
+  max-width: 90vw;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0,0,0,.5);
+}
+
+.modal-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.modal-close {
+  cursor: pointer;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  font-size: 1.2rem;
+}
+
+.form-group { margin-bottom: 1rem; }
+
+.form-label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.3rem;
+}
+
+.form-input, .form-select, .form-textarea {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.5rem 0.7rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  outline: none;
+}
+
+.form-input:focus, .form-select:focus, .form-textarea:focus { border-color: var(--accent); }
+.form-textarea { resize: vertical; min-height: 60px; }
+.form-select option { background: var(--surface-2); }
+
+.form-row { display: flex; gap: 0.75rem; }
+.form-row > .form-group { flex: 1; }
+
+/* ─── CHART ─── */
+.chart-container {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.2rem;
+  margin-bottom: 1.5rem;
+}
+
+.chart-title { font-size: 0.85rem; font-weight: 600; margin-bottom: 1rem; }
+
+.bar-chart { display: flex; align-items: flex-end; gap: 4px; height: 120px; }
+
+.bar-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  justify-content: flex-end;
+}
+
+.bar {
+  width: 100%;
+  max-width: 32px;
+  background: var(--accent);
+  border-radius: 3px 3px 0 0;
+  min-height: 2px;
+  transition: height 0.3s;
+}
+
+.bar-label {
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+  white-space: nowrap;
+}
+
+.bar-value {
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+/* ─── DETAIL PANEL ─── */
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.detail-item { }
+.detail-label { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.detail-value { font-size: 0.95rem; margin-top: 0.15rem; }
+
+/* ─── TOAST ─── */
+.toast {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  background: var(--green);
+  color: #000;
+  padding: 0.7rem 1.2rem;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  font-weight: 600;
+  z-index: 200;
+  transform: translateY(100px);
+  opacity: 0;
+  transition: all 0.3s;
+}
+
+.toast.show { transform: translateY(0); opacity: 1; }
+.toast.error { background: var(--red); color: #fff; }
+
+/* ─── LOADING ─── */
+.spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.loading-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem;
+  gap: 0.5rem;
+  color: var(--text-muted);
+}
+
+/* ─── RESPONSIVE ─── */
+@media (max-width: 768px) {
+  .sidebar { display: none; }
+  .main { padding: 1rem; }
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .modal { min-width: auto; width: 95vw; }
+  .form-row { flex-direction: column; }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ═══ SIDEBAR ═══ -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">⚡ Chief OS</div>
+    <nav class="sidebar-nav">
+      <button class="nav-item active" data-page="dashboard" onclick="showPage('dashboard')">
+        📊 Dashboard
+      </button>
+      <button class="nav-item" data-page="users" onclick="showPage('users')">
+        👥 Users
+      </button>
+      <button class="nav-item" data-page="analytics" onclick="showPage('analytics')">
+        📈 Analytics
+      </button>
+    </nav>
+    <div class="sidebar-footer">
+      Chief OS Admin v1.0<br>
+      <span id="server-status">Connecting...</span>
+    </div>
+  </aside>
+
+  <!-- ═══ MAIN ═══ -->
+  <div class="main">
+
+    <!-- ─── DASHBOARD PAGE ─── -->
+    <div id="page-dashboard" class="page">
+      <div class="page-header">
+        <h1 class="page-title">Dashboard</h1>
+        <div class="header-actions">
+          <button class="btn" onclick="refreshAll()">↻ Refresh</button>
+        </div>
+      </div>
+
+      <div class="stats-grid" id="stats-grid">
+        <div class="stat-card"><div class="stat-label">Total Users</div><div class="stat-value" id="st-total">—</div></div>
+        <div class="stat-card"><div class="stat-label">Active</div><div class="stat-value" id="st-active" style="color:var(--green)">—</div></div>
+        <div class="stat-card"><div class="stat-label">Expired</div><div class="stat-value" id="st-expired" style="color:var(--red)">—</div></div>
+        <div class="stat-card"><div class="stat-label">Events (7d)</div><div class="stat-value" id="st-events" style="color:var(--blue)">—</div></div>
+      </div>
+
+      <div class="chart-container">
+        <div class="chart-title">Daily Usage (30 days)</div>
+        <div class="bar-chart" id="daily-chart"></div>
+      </div>
+
+      <!-- Recent Users Quick View -->
+      <div class="table-container">
+        <div class="table-header">
+          <span class="table-title">Recent Users</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Channel</th>
+              <th>Plan</th>
+              <th>Status</th>
+              <th>Days Left</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="dash-users-tbody">
+            <tr><td colspan="6" class="loading-state"><span class="spinner"></span> Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ─── USERS PAGE ─── -->
+    <div id="page-users" class="page" style="display:none">
+      <div class="page-header">
+        <h1 class="page-title">Users</h1>
+        <div class="header-actions">
+          <button class="btn" onclick="refreshAll()">↻ Refresh</button>
+        </div>
+      </div>
+
+      <div class="table-container">
+        <div class="table-header">
+          <span class="table-title" id="users-count">All Users</span>
+          <input class="search-input" placeholder="Search users..." oninput="filterUsers(this.value)" />
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Channel</th>
+              <th>Plan</th>
+              <th>Status</th>
+              <th>Mode</th>
+              <th>Goal</th>
+              <th>Days Left</th>
+              <th>Joined</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="users-tbody">
+            <tr><td colspan="9" class="loading-state"><span class="spinner"></span> Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ─── ANALYTICS PAGE ─── -->
+    <div id="page-analytics" class="page" style="display:none">
+      <div class="page-header">
+        <h1 class="page-title">Analytics</h1>
+        <div class="header-actions">
+          <button class="btn" onclick="refreshAll()">↻ Refresh</button>
+        </div>
+      </div>
+
+      <div class="stats-grid" id="analytics-stats"></div>
+
+      <div class="chart-container">
+        <div class="chart-title">Event Types (7 days)</div>
+        <div class="bar-chart" id="event-type-chart"></div>
+      </div>
+
+      <div class="chart-container">
+        <div class="chart-title">Daily Activity (30 days)</div>
+        <div class="bar-chart" id="analytics-daily-chart"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══ MODAL ═══ -->
+<div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal" id="modal-content"></div>
+</div>
+
+<!-- ═══ TOAST ═══ -->
+<div class="toast" id="toast"></div>
+
+<script>
+/* ═══════════════════════════════════════════
+   CONFIG
+   ═══════════════════════════════════════════ */
+const API_BASE = '/api/admin';
+const ADMIN_KEY = new URLSearchParams(window.location.search).get('key') || '';
+
+if (!ADMIN_KEY) {
+  document.body.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#f87171;font-family:Inter,sans-serif">
+      <div style="text-align:center">
+        <h1 style="font-size:2rem;margin-bottom:0.5rem">🔒 Access Denied</h1>
+        <p style="color:#a1a1aa">Append <code>?key=YOUR_ADMIN_SECRET</code> to the URL.</p>
+      </div>
+    </div>`;
+}
+
+/* ═══ STATE ═══ */
+let allUsers = [];
+let analytics = {};
+
+/* ═══ API ═══ */
+async function api(path, method = 'GET', body = null) {
+  const opts = {
+    method,
+    headers: { 'Content-Type': 'application/json', 'x-admin-key': ADMIN_KEY },
+  };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(`${API_BASE}${path}`, opts);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+/* ═══ TOAST ═══ */
+function toast(msg, isError = false) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = isError ? 'toast error show' : 'toast show';
+  setTimeout(() => el.className = 'toast', 3000);
+}
+
+/* ═══ NAVIGATION ═══ */
+function showPage(page) {
+  document.querySelectorAll('.page').forEach(p => p.style.display = 'none');
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById(`page-${page}`).style.display = 'block';
+  document.querySelector(`[data-page="${page}"]`).classList.add('active');
+}
+
+/* ═══ DATA LOADING ═══ */
+async function refreshAll() {
+  try {
+    const [users, stats] = await Promise.all([
+      api('/users'),
+      api('/analytics'),
+    ]);
+    allUsers = users;
+    analytics = stats;
+    renderDashboard();
+    renderUsersTable(allUsers);
+    renderAnalytics();
+    document.getElementById('server-status').textContent = '● Connected';
+    document.getElementById('server-status').style.color = '#4ade80';
+  } catch (e) {
+    toast('Failed to load data: ' + e.message, true);
+    document.getElementById('server-status').textContent = '● Error';
+    document.getElementById('server-status').style.color = '#f87171';
+  }
+}
+
+/* ═══ DASHBOARD ═══ */
+function renderDashboard() {
+  document.getElementById('st-total').textContent = analytics.total_users || 0;
+  document.getElementById('st-active').textContent = analytics.active_users || 0;
+  document.getElementById('st-expired').textContent = analytics.expired_users || 0;
+  document.getElementById('st-events').textContent = (analytics.usage_7d?.total_events || 0).toLocaleString();
+
+  // Daily chart (30d)
+  renderBarChart('daily-chart', analytics.usage_30d_daily || {});
+
+  // Recent users (top 5)
+  const tbody = document.getElementById('dash-users-tbody');
+  const recent = allUsers.slice(0, 5);
+  tbody.innerHTML = recent.map(u => `
+    <tr>
+      <td><strong>${esc(u.name)}</strong><br><span style="color:var(--text-muted);font-size:0.75rem">${esc(u.display_id)}</span></td>
+      <td><span class="badge badge-${u.channel}">${u.channel}</span></td>
+      <td><span class="badge badge-${u.plan}">${u.plan}</span></td>
+      <td><span class="badge badge-${u.status}">${u.status}</span></td>
+      <td>${u.days_left !== null ? u.days_left + 'd' : '∞'}</td>
+      <td><button class="btn btn-sm" onclick="openUserModal('${esc(u.user_id)}')">Manage</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:2rem">No users yet</td></tr>';
+}
+
+/* ═══ USERS TABLE ═══ */
+function renderUsersTable(users) {
+  document.getElementById('users-count').textContent = `All Users (${users.length})`;
+  const tbody = document.getElementById('users-tbody');
+  tbody.innerHTML = users.map(u => `
+    <tr>
+      <td>
+        <strong>${esc(u.name)}</strong><br>
+        <span style="color:var(--text-muted);font-size:0.72rem">${esc(u.display_id)}</span>
+      </td>
+      <td><span class="badge badge-${u.channel}">${u.channel}</span></td>
+      <td><span class="badge badge-${u.plan}">${u.plan}</span></td>
+      <td><span class="badge badge-${u.status}">${u.status}</span></td>
+      <td style="color:var(--text-muted)">${esc(u.mission_mode)}</td>
+      <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-muted)" title="${esc(u.goal)}">${esc(u.goal)}</td>
+      <td>${u.days_left !== null ? u.days_left + 'd' : '∞'}</td>
+      <td style="font-size:0.75rem;color:var(--text-muted)">${formatDate(u.joined_at)}</td>
+      <td>
+        <div style="display:flex;gap:4px">
+          <button class="btn btn-sm" onclick="openUserModal('${esc(u.user_id)}')">Manage</button>
+          <button class="btn btn-sm btn-primary" onclick="quickExtend('${esc(u.user_id)}', 14)">+14d</button>
+        </div>
+      </td>
+    </tr>
+  `).join('') || '<tr><td colspan="9" style="color:var(--text-muted);text-align:center;padding:2rem">No users found</td></tr>';
+}
+
+function filterUsers(q) {
+  const lower = q.toLowerCase();
+  const filtered = allUsers.filter(u =>
+    (u.name || '').toLowerCase().includes(lower) ||
+    (u.display_id || '').toLowerCase().includes(lower) ||
+    (u.user_id || '').toLowerCase().includes(lower) ||
+    (u.plan || '').includes(lower) ||
+    (u.channel || '').includes(lower)
+  );
+  renderUsersTable(filtered);
+}
+
+/* ═══ ANALYTICS ═══ */
+function renderAnalytics() {
+  const u7 = analytics.usage_7d || {};
+
+  const statsHtml = [
+    { label: 'Active Users (7d)', value: u7.active_users || 0, color: 'var(--green)' },
+    { label: 'Total Events (7d)', value: (u7.total_events || 0).toLocaleString(), color: 'var(--blue)' },
+    { label: 'Messages In', value: (u7.event_breakdown?.message_in || 0).toLocaleString(), color: 'var(--accent)' },
+    { label: 'Pulses', value: u7.event_breakdown?.pulse || 0, color: 'var(--purple)' },
+    { label: 'Brain Queries', value: u7.event_breakdown?.brain_query || 0, color: 'var(--orange)' },
+    { label: 'Research', value: u7.event_breakdown?.research || 0, color: 'var(--blue)' },
+  ].map(s => `
+    <div class="stat-card">
+      <div class="stat-label">${s.label}</div>
+      <div class="stat-value" style="color:${s.color}">${s.value}</div>
+    </div>
+  `).join('');
+
+  document.getElementById('analytics-stats').innerHTML = statsHtml;
+
+  // Event type chart
+  renderBarChart('event-type-chart', u7.event_breakdown || {});
+
+  // Daily chart 30d
+  renderBarChart('analytics-daily-chart', analytics.usage_30d_daily || {});
+}
+
+/* ═══ BAR CHART ═══ */
+function renderBarChart(containerId, data) {
+  const container = document.getElementById(containerId);
+  const entries = Object.entries(data);
+  if (!entries.length) {
+    container.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;padding:2rem;text-align:center">No data yet</div>';
+    return;
+  }
+  const maxVal = Math.max(...entries.map(e => e[1]), 1);
+  container.innerHTML = entries.map(([label, val]) => {
+    const h = Math.max(2, (val / maxVal) * 100);
+    const shortLabel = label.length > 8 ? label.slice(-5) : label;
+    return `
+      <div class="bar-col">
+        <span class="bar-value">${val}</span>
+        <div class="bar" style="height:${h}%"></div>
+        <span class="bar-label">${shortLabel}</span>
+      </div>
+    `;
+  }).join('');
+}
+
+/* ═══ USER MODAL ═══ */
+async function openUserModal(userId) {
+  const overlay = document.getElementById('modal-overlay');
+  const modal = document.getElementById('modal-content');
+
+  modal.innerHTML = '<div class="loading-state"><span class="spinner"></span> Loading user...</div>';
+  overlay.classList.add('open');
+
+  try {
+    const detail = await api(`/users/${encodeURIComponent(userId)}`);
+    const u = detail;
+    const sub = u.subscription || {};
+    const stats = u.stats || {};
+    const usage = u.usage_30d || {};
+    const config = u.config || {};
+
+    modal.innerHTML = `
+      <div class="modal-title">
+        <span>👤 ${esc(config.user_name || userId)}</span>
+        <button class="modal-close" onclick="closeModal()">✕</button>
+      </div>
+
+      <div class="detail-grid">
+        <div class="detail-item"><div class="detail-label">User ID</div><div class="detail-value" style="font-family:monospace;font-size:0.8rem">${esc(userId)}</div></div>
+        <div class="detail-item"><div class="detail-label">Channel</div><div class="detail-value">${userId.startsWith('wa_') ? '📱 WhatsApp' : '✈️ Telegram'}</div></div>
+        <div class="detail-item"><div class="detail-label">Plan</div><div class="detail-value"><span class="badge badge-${sub.plan || 'trial'}">${sub.plan || 'trial'}</span></div></div>
+        <div class="detail-item"><div class="detail-label">Status</div><div class="detail-value"><span class="badge badge-${sub.status || 'active'}">${sub.status || 'active'}</span></div></div>
+        <div class="detail-item"><div class="detail-label">Expires</div><div class="detail-value">${sub.expires_at ? formatDate(sub.expires_at) : '∞ Never'}</div></div>
+        <div class="detail-item"><div class="detail-label">Mode</div><div class="detail-value">${esc(config.mission_mode || '—')}</div></div>
+      </div>
+
+      <div class="stats-grid" style="margin-bottom:1.2rem">
+        <div class="stat-card"><div class="stat-label">Active Tasks</div><div class="stat-value" style="font-size:1.4rem">${stats.active_tasks || 0}</div></div>
+        <div class="stat-card"><div class="stat-label">Completed</div><div class="stat-value" style="font-size:1.4rem;color:var(--green)">${stats.completed_tasks || 0}</div></div>
+        <div class="stat-card"><div class="stat-label">Memories</div><div class="stat-value" style="font-size:1.4rem;color:var(--purple)">${stats.total_memories || 0}</div></div>
+        <div class="stat-card"><div class="stat-label">Brain Dumps</div><div class="stat-value" style="font-size:1.4rem;color:var(--blue)">${stats.total_dumps || 0}</div></div>
+      </div>
+
+      <h3 style="font-size:0.85rem;margin-bottom:0.8rem;color:var(--text-muted)">USAGE (30 DAYS)</h3>
+      <div class="bar-chart" id="modal-usage-chart" style="height:80px;margin-bottom:1.5rem"></div>
+
+      <h3 style="font-size:0.85rem;margin-bottom:0.8rem;color:var(--text-muted)">MANAGE SUBSCRIPTION</h3>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Plan</label>
+          <select class="form-select" id="edit-plan">
+            <option value="trial" ${sub.plan==='trial'?'selected':''}>Trial</option>
+            <option value="pro" ${sub.plan==='pro'?'selected':''}>Pro</option>
+            <option value="unlimited" ${sub.plan==='unlimited'?'selected':''}>Unlimited</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Status</label>
+          <select class="form-select" id="edit-status">
+            <option value="active" ${sub.status==='active'?'selected':''}>Active</option>
+            <option value="suspended" ${sub.status==='suspended'?'selected':''}>Suspended</option>
+            <option value="expired" ${sub.status==='expired'?'selected':''}>Expired</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Extend by (days)</label>
+          <input class="form-input" id="edit-days" type="number" min="0" value="0" placeholder="0" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Or set expiry date</label>
+          <input class="form-input" id="edit-expiry" type="datetime-local"
+            value="${sub.expires_at ? new Date(sub.expires_at).toISOString().slice(0,16) : ''}" />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Admin Notes</label>
+        <textarea class="form-textarea" id="edit-notes" placeholder="Internal notes...">${esc(sub.notes || '')}</textarea>
+      </div>
+
+      <div style="display:flex;gap:0.5rem;justify-content:flex-end;margin-top:1rem">
+        <button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveUser('${esc(userId)}')">💾 Save Changes</button>
+      </div>
+    `;
+
+    // Render usage chart inside modal
+    setTimeout(() => renderBarChart('modal-usage-chart', usage), 50);
+
+  } catch (e) {
+    modal.innerHTML = `<div style="color:var(--red)">Error loading user: ${e.message}</div>`;
+  }
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('open');
+}
+
+async function saveUser(userId) {
+  const plan = document.getElementById('edit-plan').value;
+  const status = document.getElementById('edit-status').value;
+  const addDays = parseInt(document.getElementById('edit-days').value) || 0;
+  const expiry = document.getElementById('edit-expiry').value;
+  const notes = document.getElementById('edit-notes').value;
+
+  const body = { plan, status, notes };
+  if (addDays > 0) body.add_days = addDays;
+  if (expiry) body.set_expires = new Date(expiry).toISOString();
+
+  try {
+    await api(`/users/${encodeURIComponent(userId)}`, 'PUT', body);
+    toast('✅ User updated successfully');
+    closeModal();
+    refreshAll();
+  } catch (e) {
+    toast('❌ ' + e.message, true);
+  }
+}
+
+async function quickExtend(userId, days) {
+  try {
+    await api(`/users/${encodeURIComponent(userId)}`, 'PUT', { add_days: days });
+    toast(`✅ Extended ${days} days`);
+    refreshAll();
+  } catch (e) {
+    toast('❌ ' + e.message, true);
+  }
+}
+
+/* ═══ UTIL ═══ */
+function esc(s) { if (!s) return '—'; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function formatDate(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  } catch { return '—'; }
+}
+
+/* ═══ INIT ═══ */
+if (ADMIN_KEY) refreshAll();
+</script>
+</body>
+</html>

@@ -1,12 +1,20 @@
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from .webhook import process_webhook
 from .pulse import process_pulse
 from .whatsapp import process_whatsapp_webhook
 from .auth import handle_google_auth_start, handle_google_auth_callback
 from .google_sync import backfill_tasks_to_google
+from .research import process_all_research
+from .billing import (
+    admin_list_users,
+    admin_get_user_detail,
+    admin_update_subscription,
+    admin_get_analytics,
+)
 import os
+from pathlib import Path
 
 app = FastAPI(title="Integrated-OS")
 
@@ -110,3 +118,83 @@ async def google_backfill(request: Request):
 
     result = await backfill_tasks_to_google(user_id, resync=resync)
     return result
+
+
+# ─────────────────────────────────────────────
+# RESEARCH AGENT ROUTE
+# ─────────────────────────────────────────────
+
+@app.post("/api/research")
+async def research_route(request: Request):
+    """Cron-triggered: process pending research tasks in agent_queue."""
+    secret = request.headers.get("x-pulse-secret")
+    env_secret = os.getenv("PULSE_SECRET")
+
+    if secret != env_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    results = await process_all_research()
+    return {"success": True, "processed": results}
+
+
+# ─────────────────────────────────────────────
+# ADMIN PANEL & API
+# ─────────────────────────────────────────────
+
+def _verify_admin(request: Request):
+    """Validate admin key from header or query param."""
+    key = request.headers.get("x-admin-key") or request.query_params.get("key")
+    admin_key = os.getenv("ADMIN_SECRET")
+    if not admin_key:
+        raise HTTPException(status_code=500, detail="ADMIN_SECRET not configured")
+    if key != admin_key:
+        raise HTTPException(status_code=401, detail="Invalid admin key")
+
+
+@app.get("/admin")
+async def admin_panel(request: Request):
+    """Serve the admin dashboard HTML."""
+    html_path = Path(__file__).resolve().parent.parent / "admin.html"
+    if html_path.exists():
+        return FileResponse(str(html_path), media_type="text/html")
+    raise HTTPException(status_code=404, detail="Admin panel not found")
+
+
+@app.get("/api/admin/users")
+async def admin_users_route(request: Request):
+    """List all users with subscription info."""
+    _verify_admin(request)
+    users = await admin_list_users()
+    return users
+
+
+@app.get("/api/admin/users/{user_id:path}")
+async def admin_user_detail_route(user_id: str, request: Request):
+    """Get full user detail with usage stats."""
+    _verify_admin(request)
+    detail = await admin_get_user_detail(user_id)
+    return detail
+
+
+@app.put("/api/admin/users/{user_id:path}")
+async def admin_user_update_route(user_id: str, request: Request):
+    """Update a user's subscription (plan, status, extend, notes)."""
+    _verify_admin(request)
+    body = await request.json()
+    result = await admin_update_subscription(
+        user_id=user_id,
+        plan=body.get("plan"),
+        status=body.get("status"),
+        add_days=body.get("add_days"),
+        set_expires=body.get("set_expires"),
+        notes=body.get("notes"),
+    )
+    return result
+
+
+@app.get("/api/admin/analytics")
+async def admin_analytics_route(request: Request):
+    """Platform-wide analytics."""
+    _verify_admin(request)
+    data = await admin_get_analytics()
+    return data

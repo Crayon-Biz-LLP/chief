@@ -1,8 +1,13 @@
 import os
+import json
 import httpx
 from supabase import create_async_client, AsyncClient
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import re
+
+from .intent import classify_intent, extract_multimodal_content
+from .memory import store_memory, interrogate_brain, extract_and_store_graph
+from .billing import check_access, record_usage
 
 _supabase_client: AsyncClient | None = None
 
@@ -15,8 +20,9 @@ async def get_supabase() -> AsyncClient:
 MAIN_KEYBOARD = {
     "keyboard": [
         [{"text": "🔴 Urgent"}, {"text": "📋 Brief"}],
-        [{"text": "👥 People"}, {"text": "🔓 Vault"}],
-        [{"text": "🧭 Main Goal"}, {"text": "⚙️ Settings"}]
+        [{"text": "� Mission"}, {"text": "� Library"}],
+        [{"text": "🧭 Main Goal"}, {"text": "🔓 Vault"}],
+        [{"text": "👥 People"}, {"text": "⚙️ Settings"}]
     ],
     "resize_keyboard": True,
     "persistent": True
@@ -77,7 +83,25 @@ async def send_telegram(chat_id: str, text: str, reply_markup: dict = MAIN_KEYBO
         "reply_markup": reply_markup
     }
     async with httpx.AsyncClient() as client:
-        await client.post(url, json=payload)
+        resp = await client.post(url, json=payload)
+        # Retry without Markdown if parse fails
+        if not resp.is_success or (resp.json().get("ok") is False):
+            payload.pop("parse_mode", None)
+            await client.post(url, json=payload)
+
+
+async def download_telegram_file(file_id: str) -> tuple[bytes, str]:
+    """Download a file from Telegram servers. Returns (file_bytes, mime_type)."""
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        info = await client.get(f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}")
+        file_data = info.json()
+        if not file_data.get("ok"):
+            raise Exception(f"Telegram getFile error: {file_data}")
+        file_path = file_data["result"]["file_path"]
+        mime = file_data["result"].get("mime_type", "application/octet-stream")
+        dl = await client.get(f"https://api.telegram.org/file/bot{bot_token}/{file_path}")
+        return dl.content, mime
 
 async def set_config(user_id: str, key: str, content: str):
     supabase = await get_supabase()
@@ -279,14 +303,19 @@ async def process_webhook(update: dict):
             await send_telegram(chat_id, "List your stakeholders (e.g., Sunju (Wife), Christy (Client)), or type **Skip**.")
         return
 
-    # --- 4. THE KILL SWITCH ---
-    if await is_trial_expired(user_id):
-        await send_telegram(chat_id, "⏳ **Your 14-Day Sprint has concluded.** Contact Danny to upgrade.")
+    # --- 4. ACCESS CONTROL (replaces hardcoded 14-day trial) ---
+    access = await check_access(user_id)
+    if not access["allowed"]:
+        reason = access.get("reason", "Your plan has expired. Contact your admin.")
+        await send_telegram(chat_id, f"⏳ **{reason}**")
         return
+
+    # Record inbound usage
+    await record_usage(user_id, "message_in", channel="telegram")
 
     # --- 5. COMMAND MODE ---
     final_reply = ""
-    command_list = ['🔴 Urgent', '📋 Brief', '🧭 Main Goal', '🔓 Vault', '👥 People', '⚙️ Settings', '🎭 Change Persona', '⏰ Change Schedule', '📍 Change Location', '🎯 Change Goal', '🔙 Back to Dashboard']
+    command_list = ['🔴 Urgent', '📋 Brief', '🧭 Main Goal', '🔓 Vault', '👥 People', '⚙️ Settings', '🎭 Change Persona', '⏰ Change Schedule', '📍 Change Location', '🎯 Change Goal', '🔙 Back to Dashboard', '🚀 Mission', '📚 Library']
 
     if text.startswith('/') or text in command_list:
         
@@ -320,13 +349,26 @@ async def process_webhook(update: dict):
             return
         
         elif text == '🔓 Vault':
-            response = await supabase.table('logs').select('content, created_at').eq('user_id', user_id).ilike('entry_type', '%IDEAS%').order('created_at', desc=True).limit(5).execute()
-            ideas = response.data
-            if ideas:
-                formatted_ideas = "\n\n".join([f"💡 *{datetime.fromisoformat(i['created_at'].replace('Z','+00:00')).strftime('%m/%d/%Y')}:* {i['content']}" for i in ideas])
-                final_reply = "🔓 **THE IDEA VAULT (Last 5):**\n\n" + formatted_ideas
+            # Show memories (notes + reflections) instead of just logs
+            mem_res = await supabase.table('memories').select('content, memory_type, created_at').eq('user_id', user_id).order('created_at', desc=True).limit(5).execute()
+            mems = mem_res.data
+            if mems:
+                formatted = "\n\n".join([
+                    f"{'💡' if m['memory_type'] == 'note' else '📝'} "
+                    f"*{datetime.fromisoformat(m['created_at'].replace('Z','+00:00')).strftime('%m/%d')}:* "
+                    f"{m['content'][:200]}"
+                    for m in mems
+                ])
+                final_reply = "🔓 **VAULT (Last 5):**\n\n" + formatted
             else:
-                final_reply = "The Vault is empty."
+                # Fallback to old logs table
+                log_res = await supabase.table('logs').select('content, created_at').eq('user_id', user_id).ilike('entry_type', '%IDEAS%').order('created_at', desc=True).limit(5).execute()
+                ideas = log_res.data
+                if ideas:
+                    formatted = "\n\n".join([f"💡 *{datetime.fromisoformat(i['created_at'].replace('Z','+00:00')).strftime('%m/%d')}:* {i['content']}" for i in ideas])
+                    final_reply = "🔓 **VAULT (Last 5):**\n\n" + formatted
+                else:
+                    final_reply = "The Vault is empty. Send me notes starting with `N:` to fill it."
         
         elif text == '🧭 Main Goal':
             final_reply = f"🧭 **CURRENT MAIN GOAL:**\n\n{season}"
@@ -350,7 +392,37 @@ async def process_webhook(update: dict):
             response = await supabase.table('people').select('name, role').eq('user_id', user_id).execute()
             people = response.data or []
             final_reply = "👥 **STAKEHOLDERS:**\n\n" + "\n".join([f"• {p['name']} ({p['role']})" for p in people]) if people else "No one registered."
-            
+
+        # ─── NEW COMMANDS ───
+
+        elif text == '🚀 Mission' or text.startswith('/mission'):
+            params = text.replace('/mission', '').replace('🚀 Mission', '').strip()
+            if not params:
+                # List active missions
+                m_res = await supabase.table('missions').select('title, status').eq('user_id', user_id).eq('status', 'active').execute()
+                missions = m_res.data or []
+                if missions:
+                    m_list = "\n".join([f"• {m['title']}" for m in missions])
+                    final_reply = f"🚀 **ACTIVE MISSIONS:**\n\n{m_list}\n\n_Type `/mission [Goal]` to create a new one._"
+                else:
+                    final_reply = "🚀 No active missions.\n\nType `/mission [Goal]` to declare one."
+            else:
+                # Create new mission
+                try:
+                    await supabase.table('missions').insert({'user_id': user_id, 'title': params, 'status': 'active'}).execute()
+                    final_reply = f"🚀 **MISSION DECLARED:** {params}"
+                except Exception:
+                    final_reply = "❌ Error creating mission."
+
+        elif text == '📚 Library' or text.startswith('/library'):
+            lib_res = await supabase.table('resources').select('title, url, category').eq('user_id', user_id).order('created_at', desc=True).limit(10).execute()
+            items = lib_res.data or []
+            if items:
+                formatted = [f"🔖 [{i.get('title') or 'Untitled'}]({i.get('url')})" for i in items]
+                final_reply = "📚 **RESOURCE LIBRARY (Last 10):**\n\n" + "\n\n".join(formatted)
+            else:
+                final_reply = "📚 Library is empty. Send URLs and I'll save them."
+
         elif text.startswith('/person '):
             input_str = text.replace('/person ', '').strip()
             parts = [s.strip() for s in input_str.split('|')]
@@ -371,7 +443,208 @@ async def process_webhook(update: dict):
             await send_telegram(chat_id, final_reply)
         return
 
-    # --- 6. CAPTURE MODE ---
+    # ─────────────────────────────────────────────
+    # 6. BRAIN INTERROGATION — ?query syntax
+    # ─────────────────────────────────────────────
+    if text.startswith('?'):
+        query = text[1:].strip()
+        if query:
+            await send_telegram(chat_id, "🧠 _Searching your vault..._")
+            answer = await interrogate_brain(user_id, query)
+            await send_telegram(chat_id, f"🧠 **Brain Search:**\n\n{answer}")
+            await record_usage(user_id, "brain_query", channel="telegram")
+        else:
+            await send_telegram(chat_id, "Send a question after `?` to search your vault.\nExample: `?What did I say about the pitch deck?`")
+        return
+
+    # ─────────────────────────────────────────────
+    # 7. EXPLICIT NOTE CAPTURE — N: or Note: prefix
+    # ─────────────────────────────────────────────
+    if text.startswith('N:') or text.startswith('Note:') or text.startswith('note:'):
+        note_content = text.split(':', 1)[1].strip()
+        if note_content:
+            mem_id = await store_memory(user_id, note_content, memory_type="note")
+            if mem_id:
+                # Background: extract graph entities from the note
+                try:
+                    await extract_and_store_graph(user_id, note_content, memory_id=mem_id)
+                except Exception:
+                    pass
+            await send_telegram(chat_id, "📝 Note vaulted.")
+        else:
+            await send_telegram(chat_id, "Type your note after `N:` — e.g., `N: The client prefers a phased rollout`")
+        return
+
+    # ─────────────────────────────────────────────
+    # 8. MULTIMODAL INPUT — Photos, Voice, Documents
+    # ─────────────────────────────────────────────
+    if not text:
+        photo = message.get('photo')
+        voice = message.get('voice')
+        audio = message.get('audio')
+        document = message.get('document')
+
+        file_id = None
+        media_label = ""
+
+        if photo:
+            file_id = photo[-1].get('file_id')
+            media_label = "image"
+        elif voice or audio:
+            src = voice or audio
+            file_id = src.get('file_id')
+            media_label = "audio"
+        elif document:
+            file_id = document.get('file_id')
+            doc_mime = document.get('mime_type', '')
+            if doc_mime in ('application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') or doc_mime.startswith('text/'):
+                media_label = "document"
+            else:
+                await send_telegram(chat_id, "⚠️ Unsupported file type. Send as PDF, DOCX, image, or voice.")
+                return
+
+        if file_id and media_label:
+            await send_telegram(chat_id, f"📎 Processing {media_label}...")
+            try:
+                file_bytes, mime = await download_telegram_file(file_id)
+
+                # Resolve user config for persona-aware extraction
+                tz_offset_val = float(next((c['content'] for c in configs if c['key'] == 'timezone_offset'), '0'))
+
+                extracted = await extract_multimodal_content(
+                    file_bytes, mime, user_id,
+                    identity=identity or "1",
+                    goal=season or "",
+                    tz_offset=tz_offset_val,
+                )
+
+                task_count = 0
+                note_count = 0
+
+                for item in extracted:
+                    item_type = (item.get('type') or '').upper()
+                    content = item.get('content', '')
+                    if not content:
+                        continue
+
+                    if item_type == 'TASK':
+                        await supabase.table('raw_dumps').insert([{
+                            'user_id': user_id,
+                            'content': content,
+                            'source': 'telegram_media',
+                        }]).execute()
+                        task_count += 1
+                    elif item_type == 'NOTE':
+                        await store_memory(user_id, content, memory_type="note")
+                        note_count += 1
+                    elif item_type == 'DELEGATE':
+                        await supabase.table('agent_queue').insert({
+                            'user_id': user_id,
+                            'task': content,
+                            'status': 'pending',
+                        }).execute()
+
+                parts = []
+                if task_count:
+                    parts.append(f"{task_count} task{'s' if task_count != 1 else ''}")
+                if note_count:
+                    parts.append(f"{note_count} note{'s' if note_count != 1 else ''}")
+
+                summary = " & ".join(parts) if parts else "Content"
+                await send_telegram(chat_id, f"✅ Logged {summary}.")
+            except Exception as e:
+                print(f"[MULTIMODAL ERROR] user={user_id}: {e}")
+                await send_telegram(chat_id, "⚠️ Couldn't process that file. Try sending as text.")
+            return
+        return
+
+    # ─────────────────────────────────────────────
+    # 9. SMART CAPTURE — Intent Classification
+    # ─────────────────────────────────────────────
     if text:
-        await supabase.table('raw_dumps').insert([{'user_id': user_id, 'content': text, 'source': 'telegram'}]).execute()
-        await send_telegram(chat_id, '✅')
+        # Resolve user config values
+        tz_offset_val = float(next((c['content'] for c in configs if c['key'] == 'timezone_offset'), '0'))
+
+        classification = await classify_intent(
+            text=text,
+            user_id=user_id,
+            identity=identity or "1",
+            goal=season or "",
+            tz_offset=tz_offset_val,
+        )
+
+        intent = classification.get('intent', 'TASK')
+        confidence = classification.get('confidence', 0.5)
+        receipt = classification.get('receipt', 'Got it.')
+
+        print(f"[CLASSIFY] user={user_id} intent={intent} ({confidence:.0%}) — {text[:60]}...")
+
+        if intent == 'TASK' and confidence >= 0.5:
+            # Store in raw_dumps for Pulse to process into structured tasks
+            await supabase.table('raw_dumps').insert([{
+                'user_id': user_id,
+                'content': text,
+                'source': 'telegram',
+            }]).execute()
+            await send_telegram(chat_id, f"✅ {receipt}")
+
+        elif intent == 'QUERY' and confidence >= 0.5:
+            # On-demand brain search
+            await send_telegram(chat_id, "🧠 _Searching your vault..._")
+            answer = await interrogate_brain(user_id, text)
+            await send_telegram(chat_id, f"🧠 {answer}")
+
+        elif intent == 'NOTE' and confidence >= 0.5:
+            # Check if it's a URL — route to resources
+            if re.match(r'https?://', text.strip()):
+                await supabase.table('resources').insert({
+                    'user_id': user_id,
+                    'url': text.strip(),
+                    'title': classification.get('title', 'New Resource'),
+                    'category': 'LINK',
+                }).execute()
+                await send_telegram(chat_id, "🔖 Resource saved to Library.")
+            else:
+                mem_id = await store_memory(user_id, text, memory_type="note")
+                if mem_id:
+                    try:
+                        await extract_and_store_graph(user_id, text, memory_id=mem_id)
+                    except Exception:
+                        pass
+                await send_telegram(chat_id, f"📝 {receipt}")
+
+        elif intent == 'DELEGATE':
+            await supabase.table('agent_queue').insert({
+                'user_id': user_id,
+                'task': text,
+                'status': 'pending',
+            }).execute()
+            await send_telegram(chat_id, f"🔍 {receipt}")
+
+        elif intent == 'NOISE':
+            # Minimal ack — still save to raw_dumps for context
+            await supabase.table('raw_dumps').insert([{
+                'user_id': user_id,
+                'content': text,
+                'source': 'telegram',
+            }]).execute()
+            await send_telegram(chat_id, "👍")
+
+        elif intent == 'CLARIFICATION_NEEDED':
+            question = classification.get('clarification_question', classification.get('reasoning', 'Could you provide more details?'))
+            # Save to raw_dumps anyway to avoid data loss
+            await supabase.table('raw_dumps').insert([{
+                'user_id': user_id,
+                'content': text,
+                'source': 'telegram',
+            }]).execute()
+            await send_telegram(chat_id, f"🤔 {receipt}\n\n{question}")
+
+        else:
+            # Fail-safe: treat as task
+            await supabase.table('raw_dumps').insert([{
+                'user_id': user_id,
+                'content': text,
+                'source': 'telegram',
+            }]).execute()
+            await send_telegram(chat_id, f"✅ {receipt}")
