@@ -4,6 +4,16 @@
             "maxDuration": 60
         }
     },
+    "crons": [
+        {
+            "path": "/api/pulse",
+            "schedule": "0 * * * *"
+        },
+        {
+            "path": "/api/research",
+            "schedule": "*/15 * * * *"
+        }
+    ],
     "routes": [
         {
             "src": "/api/(.*)",
