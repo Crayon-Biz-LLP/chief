@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 import re
 
 from .intent import classify_intent, extract_multimodal_content
-from .memory import store_memory, interrogate_brain, extract_and_store_graph
+from .memory import match_memories, store_memory, extract_and_store_graph
 from .billing import check_access, record_usage
 
 _supabase_client: AsyncClient | None = None

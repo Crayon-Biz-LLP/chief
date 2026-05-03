@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from supabase import create_async_client, AsyncClient
 from .google_sync import has_google_connection
 from .intent import classify_intent, extract_multimodal_content
-from .memory import store_memory, interrogate_brain, extract_and_store_graph
+from .memory import match_memories, store_memory, extract_and_store_graph
 from .billing import check_access, record_usage
 
 WHATSAPP_API_URL = "https://graph.facebook.com/v22.0"

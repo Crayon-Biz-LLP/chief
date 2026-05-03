@@ -33,6 +33,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_embedding
 
 -- RLS
 ALTER TABLE memories ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "memories_tenant_policy" ON memories;
 CREATE POLICY "memories_tenant_policy" ON memories
     USING (true) WITH CHECK (true);
 
@@ -59,6 +60,7 @@ CREATE INDEX IF NOT EXISTS idx_graph_nodes_user_type
 
 -- RLS
 ALTER TABLE graph_nodes ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "graph_nodes_tenant_policy" ON graph_nodes;
 CREATE POLICY "graph_nodes_tenant_policy" ON graph_nodes
     USING (true) WITH CHECK (true);
 
@@ -84,6 +86,7 @@ CREATE INDEX IF NOT EXISTS idx_graph_edges_user   ON graph_edges(user_id);
 
 -- RLS
 ALTER TABLE graph_edges ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "graph_edges_tenant_policy" ON graph_edges;
 CREATE POLICY "graph_edges_tenant_policy" ON graph_edges
     USING (true) WITH CHECK (true);
 
@@ -106,6 +109,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_queue_user_status ON agent_queue(user_id, s
 
 -- RLS
 ALTER TABLE agent_queue ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "agent_queue_tenant_policy" ON agent_queue;
 CREATE POLICY "agent_queue_tenant_policy" ON agent_queue
     USING (true) WITH CHECK (true);
 
