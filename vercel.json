@@ -15,18 +15,10 @@
             "schedule": "*/15 * * * *"
         }
     ],
-    "routes": [
+    "rewrites": [
         {
-            "src": "/api/(.*)",
-            "dest": "/api/index.py"
-        },
-        {
-            "src": "/admin",
-            "dest": "/api/index.py"
-        },
-        {
-            "src": "/",
-            "dest": "/api/index.py"
+            "source": "/(.*)",
+            "destination": "/api/index.py"
         }
     ]
 }
