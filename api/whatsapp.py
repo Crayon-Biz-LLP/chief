@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from supabase import create_async_client, AsyncClient
 from .google_sync import has_google_connection
 from .intent import classify_intent, extract_multimodal_content
-from .memory import match_memories, store_memory, extract_and_store_graph
+from .memory import store_memory, extract_and_store_graph, interrogate_brain
 from .billing import check_access, record_usage
 
 WHATSAPP_API_URL = "https://graph.facebook.com/v22.0"
@@ -559,6 +559,93 @@ async def handle_settings_action(pid: str, to: str, user_id: str, action_id: str
 
 
 # ─────────────────────────────────────────────
+# EMAIL DRAFT APPROVAL COMMAND HANDLER
+# ─────────────────────────────────────────────
+
+async def handle_ed_command(pid: str, to: str, user_id: str, raw_text: str):
+    """Handle email draft commands: ed | ed approve/reject/edit {code}"""
+    supabase = await get_supabase()
+    lower = raw_text.lower().strip()
+    parts = lower.split(None, 2)  # ['ed', 'approve', '2345 ...']
+    action = parts[1] if len(parts) > 1 else ""
+
+    # Fetch undecided email tasks for this user (small set, filter in Python)
+    res = await supabase.table('email_pending_tasks') \
+        .select('id, suggested_title, suggested_project') \
+        .eq('user_id', user_id) \
+        .is_('danny_decision', 'null') \
+        .order('created_at', desc=True) \
+        .limit(50) \
+        .execute()
+    rows = res.data or []
+
+    # Bare 'ed' or '/ed' — list pending tasks
+    if not action or action not in ('approve', 'reject', 'drop', 'edit'):
+        if not rows:
+            await send_text(pid, to, "📨 No pending email suggestions right now.")
+            return
+        lines = [f"📨 *Pending email tasks* ({len(rows)}) — reply [code] yes/drop"]
+        for row in rows[:10]:
+            shortcode = str(row['id'])[-4:]
+            proj = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
+            lines.append(f"[{shortcode}] {row['suggested_title'][:60]}{proj}")
+        lines.append("\n_Reply `[code] yes` to approve or `[code] drop` to reject_")
+        await send_text(pid, to, "\n".join(lines))
+        return
+
+    # Parse code from the third token
+    remaining = parts[2] if len(parts) > 2 else ""
+    code = remaining.split()[0] if remaining else ""
+    if not code:
+        await send_text(pid, to, f"Please include the code. E.g., `ed {action} 2345`")
+        return
+
+    match_row = next((r for r in rows if str(r['id'])[-4:] == code), None)
+    if not match_row:
+        await send_text(pid, to, f"⚠️ No pending task found with code [{code}].")
+        return
+
+    async def _create_task_from_email(title: str):
+        proj_id = None
+        proj_name = match_row.get('suggested_project', '')
+        if proj_name:
+            pres = await supabase.table('projects') \
+                .select('id').eq('user_id', user_id) \
+                .ilike('name', f"%{proj_name}%").limit(1).execute()
+            proj_id = pres.data[0]['id'] if pres.data else None
+        await supabase.table('tasks').insert({
+            'user_id': user_id,
+            'title': title,
+            'status': 'todo',
+            'priority': 'important',
+            'project_id': proj_id,
+        }).execute()
+
+    if action == 'approve':
+        await supabase.table('email_pending_tasks') \
+            .update({'danny_decision': 'approved'}).eq('id', match_row['id']).execute()
+        await _create_task_from_email(match_row['suggested_title'])
+        await send_text(pid, to, f"✅ Approved: _{match_row['suggested_title']}_\nTask added to your list.")
+
+    elif action in ('reject', 'drop'):
+        await supabase.table('email_pending_tasks') \
+            .update({'danny_decision': 'rejected'}).eq('id', match_row['id']).execute()
+        await send_text(pid, to, f"🗑️ Rejected: _{match_row['suggested_title']}_")
+
+    elif action == 'edit':
+        # Remaining text after the code is the new title
+        new_title = remaining[len(code):].strip()
+        if not new_title:
+            await send_text(pid, to, f"Usage: `ed edit {code} <new title>`")
+            return
+        await supabase.table('email_pending_tasks') \
+            .update({'suggested_title': new_title, 'danny_decision': 'approved'}) \
+            .eq('id', match_row['id']).execute()
+        await _create_task_from_email(new_title)
+        await send_text(pid, to, f"✅ Updated & approved: _{new_title}_\nTask added to your list.")
+
+
+# ─────────────────────────────────────────────
 # MAIN WEBHOOK ENTRY POINT
 # ─────────────────────────────────────────────
 
@@ -859,6 +946,56 @@ async def handle_message(pid: str, to: str, user_id: str, body: str, interactive
             await send_command_menu(pid, to)
         else:
             await handle_command(pid, to, user_id, lower)
+        return
+
+    # ===========================================================
+    # EMAIL SHORTCODE REPLY — {code} yes / {code} drop
+    # Matches replies like "2345 yes" or "2345 drop" from the briefing INBOX section
+    # ===========================================================
+    shortcode_reply = re.match(r'^(\d{1,4})\s+(yes|drop|approve|reject)$', lower)
+    if shortcode_reply:
+        code = shortcode_reply.group(1)
+        action = shortcode_reply.group(2)
+        res = await supabase.table('email_pending_tasks') \
+            .select('id, suggested_title, suggested_project') \
+            .eq('user_id', user_id) \
+            .is_('danny_decision', 'null') \
+            .order('created_at', desc=True) \
+            .limit(50) \
+            .execute()
+        match_row = next((r for r in (res.data or []) if str(r['id'])[-4:] == code), None)
+        if match_row:
+            if action in ('yes', 'approve'):
+                await supabase.table('email_pending_tasks') \
+                    .update({'danny_decision': 'approved'}).eq('id', match_row['id']).execute()
+                proj_id = None
+                proj_name = match_row.get('suggested_project', '')
+                if proj_name:
+                    pres = await supabase.table('projects') \
+                        .select('id').eq('user_id', user_id) \
+                        .ilike('name', f"%{proj_name}%").limit(1).execute()
+                    proj_id = pres.data[0]['id'] if pres.data else None
+                await supabase.table('tasks').insert({
+                    'user_id': user_id,
+                    'title': match_row['suggested_title'],
+                    'status': 'todo',
+                    'priority': 'important',
+                    'project_id': proj_id,
+                }).execute()
+                await send_text(pid, to, f"✅ Task added: _{match_row['suggested_title']}_")
+            else:  # drop / reject
+                await supabase.table('email_pending_tasks') \
+                    .update({'danny_decision': 'rejected'}).eq('id', match_row['id']).execute()
+                await send_text(pid, to, f"🗑️ Dropped: _{match_row['suggested_title']}_")
+        else:
+            await send_text(pid, to, f"⚠️ Code [{code}] not found or already decided.")
+        return
+
+    # ===========================================================
+    # EMAIL DRAFT COMMANDS — ed / ed approve / ed reject / ed edit
+    # ===========================================================
+    if lower in ("ed", "/ed") or lower.startswith("ed ") or lower.startswith("/ed "):
+        await handle_ed_command(pid, to, user_id, body)
         return
 
     # ===========================================================

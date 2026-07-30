@@ -3,6 +3,9 @@ import re
 import asyncio
 import httpx
 import json
+import hashlib
+import time
+import random
 from datetime import datetime, timedelta, timezone
 from google import genai
 from google.genai import types
@@ -18,6 +21,22 @@ from .memory import (
 )
 from .intent import classify_dumps_batch
 from .billing import record_usage
+
+# ─────────────────────────────────────────────
+# LLM FALLBACK CHAIN CONSTANTS
+# ─────────────────────────────────────────────
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
+PULSE_ENABLE_OPENROUTER_FALLBACK = os.getenv("PULSE_ENABLE_OPENROUTER_FALLBACK", "true").lower() == "true"
+PULSE_HTTP_REFERER = os.getenv("PULSE_HTTP_REFERER", "https://chief-three.vercel.app")
+PULSE_APP_NAME = os.getenv("PULSE_APP_NAME", "Chief")
+
+BRIEFING_MODEL = "gemini-2.5-flash"
+GEMMA_FALLBACK_MODEL = "gemma-4-31b-it"
+OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+
+RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit']
+NON_RETRYABLE_ERRORS = ['401', '403', '400', 'invalid']
 
 _genai_client: genai.Client | None = None
 
@@ -133,13 +152,242 @@ async def notify_admin(message: str):
 
 
 # ─────────────────────────────────────────────
+# MULTI-PROVIDER LLM FALLBACK CHAIN
+# ─────────────────────────────────────────────
+
+class SimpleResponse:
+    """Uniform response wrapper for non-Gemini providers."""
+    def __init__(self, text: str):
+        self.text = text
+
+
+def normalize_mission_title(value: str) -> str:
+    """Lowercase, strip, collapse punctuation — used for dedup comparison."""
+    if not value or not isinstance(value, str):
+        return ""
+    normalized = value.lower().strip()
+    normalized = re.sub(r'[^a-z0-9]+', ' ', normalized)
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
+    return normalized
+
+
+def _jitter(delay: float) -> float:
+    return delay * (0.75 + random.random() * 0.5)
+
+
+def parse_json_response(text: str):
+    """Robust JSON parser with markdown fence stripping and extraction fallback."""
+    if not text:
+        raise ValueError("Empty response")
+    text = re.sub(r'^```json\n?', '', text.strip())
+    text = re.sub(r'\n?```$', '', text).strip()
+    text = re.sub(r',\s*([}\]])', r'\1', text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r'\{[\s\S]*\}|\[[\s\S]*\]', text)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+    raise ValueError(f"Could not parse JSON: {text[:100]}...")
+
+
+async def _call_openrouter(prompt: str, config: dict) -> SimpleResponse:
+    """Call OpenRouter API as final fallback."""
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": PULSE_HTTP_REFERER,
+        "X-Title": PULSE_APP_NAME,
+    }
+    system_instruction = config.get('system_instruction') if config else None
+    temperature = config.get('temperature', 0.7)
+    response_mime_type = config.get('response_mime_type')
+    messages = []
+    if system_instruction:
+        messages.append({"role": "system", "content": system_instruction})
+    messages.append({"role": "user", "content": prompt})
+    body = {"model": OPENROUTER_MODEL, "messages": messages, "temperature": temperature}
+    if response_mime_type == "application/json":
+        body["response_format"] = {"type": "json_object"}
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(OPENROUTER_BASE_URL, json=body, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        if 'choices' in data and data['choices']:
+            return SimpleResponse(data['choices'][0]['message']['content'])
+        return SimpleResponse(data.get('content', '') or json.dumps(data))
+
+
+async def call_llm_with_fallback(
+    prompt: str,
+    model: str = None,
+    config: dict = None,
+    is_critical: bool = True,
+    require_json: bool = False,
+) -> SimpleResponse:
+    """
+    Multi-provider LLM call: Gemini → Gemma → OpenRouter.
+    Falls back automatically on 5xx / rate-limit errors.
+    """
+    if model is None:
+        model = BRIEFING_MODEL
+
+    max_retries = 2 if is_critical else 1
+    base_delay = 8 if is_critical else 4
+    client = get_genai_client()
+
+    providers = [
+        {
+            "name": "gemini",
+            "fn": lambda: client.models.generate_content(
+                model=model, contents=prompt, config=config or {}
+            ),
+        },
+        {
+            "name": "gemma",
+            "fn": lambda: client.models.generate_content(
+                model=GEMMA_FALLBACK_MODEL, contents=prompt, config=config or {}
+            ),
+        },
+    ]
+    if PULSE_ENABLE_OPENROUTER_FALLBACK and OPENROUTER_API_KEY:
+        providers.append({
+            "name": "openrouter",
+            "fn": lambda: _call_openrouter(prompt, config or {}),
+        })
+
+    last_err = None
+    for i, prov in enumerate(providers):
+        for attempt in range(max_retries):
+            try:
+                t0 = time.time()
+                fn = prov["fn"]
+                # openrouter fn is a coroutine; gemini fns are sync
+                if asyncio.iscoroutinefunction(fn):
+                    response = await fn()
+                else:
+                    response = await asyncio.to_thread(fn)
+                elapsed = time.time() - t0
+                if require_json:
+                    parse_json_response(response.text)   # validate only
+                print(f"[LLM OK] provider={prov['name']} elapsed={elapsed:.1f}s")
+                return response
+            except Exception as e:
+                err = str(e).lower()
+                if any(ne in err for ne in NON_RETRYABLE_ERRORS):
+                    raise
+                if any(re_err in err for re_err in RETRYABLE_ERRORS) and attempt < max_retries - 1:
+                    delay = _jitter(base_delay * (2 ** attempt))
+                    print(f"[LLM RETRY] provider={prov['name']} attempt={attempt+1} delay={delay:.0f}s")
+                    await asyncio.sleep(delay)
+                    continue
+                print(f"[LLM FAIL] provider={prov['name']}: {err[:80]}")
+                last_err = e
+                break
+        if i < len(providers) - 1:
+            print(f"[LLM FALLBACK] → {providers[i+1]['name']}")
+    raise last_err or Exception("All LLM providers failed")
+
+
+# ─────────────────────────────────────────────
+# GRAPH EDGE WRITING (non-blocking side-effect)
+# ─────────────────────────────────────────────
+
+async def write_graph_edges_for_task(
+    user_id: str,
+    task_id: int,
+    task_title: str,
+    project_id: int = None,
+    task_description: str = None,
+    people_cache: list = None,
+):
+    """
+    After a task is saved to Supabase, create graph edges:
+      task → BELONGS_TO → project
+      task → INVOLVES → person (by name match in title/description)
+    Non-blocking — if this fails the task is already saved, no rollback.
+    """
+    try:
+        from .memory import ensure_graph_node, create_graph_edge
+        supabase = await get_supabase()
+
+        task_node_id = await ensure_graph_node(
+            user_id, task_title, "task",
+            metadata={"task_id": task_id, "project_id": project_id}
+        )
+        if not task_node_id:
+            return
+
+        if project_id:
+            # Find or create a project node
+            proj_res = await supabase.table('projects').select('name').eq('id', project_id).eq('user_id', user_id).limit(1).execute()
+            if proj_res.data:
+                proj_node_id = await ensure_graph_node(
+                    user_id, proj_res.data[0]['name'], "project",
+                    metadata={"project_id": project_id}
+                )
+                if proj_node_id:
+                    await create_graph_edge(user_id, task_node_id, proj_node_id, "BELONGS_TO",
+                                            metadata={"task_id": task_id})
+
+        search_text = f"{task_title} {task_description or ''}".lower()
+        for person in (people_cache or []):
+            name = person.get('name', '')
+            if name and name.lower() in search_text:
+                person_node_id = await ensure_graph_node(
+                    user_id, name, "person",
+                    metadata={"people_name": name}
+                )
+                if person_node_id:
+                    await create_graph_edge(user_id, task_node_id, person_node_id, "INVOLVES",
+                                            metadata={"task_id": task_id})
+
+        print(f"[GRAPH] Edges written for task {task_id}: '{task_title}'")
+    except Exception as e:
+        print(f"[GRAPH WARN] Edge write non-critical failure: {e}")
+
+
+# ─────────────────────────────────────────────
+# OUTCOME MEMORY (non-blocking side-effect)
+# ─────────────────────────────────────────────
+
+async def write_outcome_memory(user_id: str, task_title: str, project_name: str = None):
+    """Record a type:outcome memory when a task is marked done."""
+    try:
+        label = f"Completed: {task_title}"
+        if project_name:
+            label += f" on {project_name}"
+        await store_memory(user_id, label, memory_type="outcome")
+        print(f"[MEMORY] Outcome recorded: {label[:60]}")
+    except Exception as e:
+        print(f"[MEMORY WARN] Outcome write non-critical failure: {e}")
+
+
+# ─────────────────────────────────────────────
 # PER-USER PULSE PROCESSING
 # ─────────────────────────────────────────────
 
 async def process_user(user_id: str, is_manual_test: bool):
+    error_log: list[str] = []
     try:
         print(f"[PULSE START] Processing User: {user_id}")
         supabase = await get_supabase()
+
+        # ─── ZOMBIE RECOVERY — reset dumps stuck in 'processing' >10 min ───
+        try:
+            ten_mins_ago = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+            await supabase.table('raw_dumps') \
+                .update({"is_processed": False}) \
+                .eq('user_id', user_id) \
+                .eq('is_processed', False) \
+                .lt('created_at', ten_mins_ago) \
+                .execute()
+        except Exception as _ze:
+            print(f"[ZOMBIE] Recovery skipped: {_ze}")
 
         if await is_trial_expired(user_id):
             print(f"[EXIT] User {user_id}: Trial Expired.")
@@ -250,14 +498,19 @@ async def process_user(user_id: str, is_manual_test: bool):
         except Exception as e:
             print(f"[ENRICH ERROR] user={user_id}: {e}")
 
-        # ─── HINDSIGHT MEMORY RETRIEVAL ───
+        # ─── HINDSIGHT MEMORY RETRIEVAL (entity-seeded) ───
         hindsight_context = "None"
         hindsight_stale = False
         task_inputs = [d['content'] for d in dumps] if dumps else []
         try:
             if task_inputs or tasks:
+                # Build entity terms from people + projects as seed signals
+                entity_terms = (
+                    [p.get('name', '') for p in people if p.get('name')] +
+                    [p.get('name', '') for p in projects if p.get('name')]
+                )
                 hindsight_lines, hindsight_stale = await retrieve_hindsight(
-                    user_id, task_inputs, tasks, top_k=5
+                    user_id, task_inputs, tasks, top_k=5, entity_terms=entity_terms or None
                 )
                 if hindsight_lines:
                     hindsight_context = "\n".join(hindsight_lines)
@@ -275,6 +528,29 @@ async def process_user(user_id: str, is_manual_test: bool):
                     graph_context = graph_ctx
         except Exception as e:
             print(f"[GRAPH ERROR] user={user_id}: {e}")
+
+        # ─── CANONICAL PAGES (synthesized project knowledge) ───
+        canonical_context = "None"
+        try:
+            if projects:
+                project_names = [p.get('name', '') for p in projects if p.get('name')]
+                if project_names:
+                    # Build an OR filter for title matching any active project name
+                    or_parts = ",".join([f"title.ilike.%{n}%" for n in project_names[:5]])
+                    pages_res = await supabase.table('canonical_pages') \
+                        .select('title, content') \
+                        .or_(or_parts) \
+                        .limit(3) \
+                        .execute()
+                    if pages_res.data:
+                        canonical_context = "\n\n".join(
+                            f"[CANONICAL — DO NOT LIST IN BRIEFING]\n### {p['title']}\n{p['content'][:400]}"
+                            for p in pages_res.data
+                        )
+                        print(f"[CANONICAL] user={user_id}: {len(pages_res.data)} pages loaded")
+        except Exception as e:
+            # Table may not exist yet — graceful skip
+            print(f"[CANONICAL SKIP] user={user_id}: {e}")
 
         # ─── ENRICHED RESOURCES CONTEXT ───
         newly_enriched_context = "None"
@@ -383,6 +659,49 @@ async def process_user(user_id: str, is_manual_test: bool):
                 except ValueError:
                     pass
 
+        # ─── STALE TASKS (7-day old todos) ───
+        seven_days_ago = (now - timedelta(days=7)).isoformat()
+        stale_tasks = [
+            t for t in tasks
+            if t.get('status') == 'todo'
+            and t.get('created_at', '') < seven_days_ago
+            and t.get('title') not in overdue_tasks
+        ]
+        stale_tasks = sorted(stale_tasks, key=lambda t: t.get('created_at', ''))[:5]
+        stale_context = None
+        if stale_tasks:
+            stale_lines = []
+            for t in stale_tasks:
+                try:
+                    created = datetime.fromisoformat(t.get('created_at', '').replace('Z', '+00:00'))
+                    days_old = (now - created).days
+                    stale_lines.append(f"- {t.get('title', '')} (stale {days_old}d)")
+                except Exception:
+                    pass
+            stale_context = "\n".join(stale_lines) if stale_lines else None
+
+        # ─── PENDING EMAIL TASKS (for inline briefing section) ───
+        pending_email_tasks = []
+        try:
+            auto_expire_cutoff = (now - timedelta(days=7)).isoformat()
+            await supabase.table('email_pending_tasks') \
+                .update({'danny_decision': 'expired'}) \
+                .eq('user_id', user_id) \
+                .is_('danny_decision', 'null') \
+                .lt('created_at', auto_expire_cutoff) \
+                .execute()
+            email_q_res = await supabase.table('email_pending_tasks') \
+                .select('id, suggested_title, suggested_project') \
+                .eq('user_id', user_id) \
+                .eq('shown_in_brief', False) \
+                .is_('danny_decision', 'null') \
+                .order('created_at', desc=False) \
+                .limit(5) \
+                .execute()
+            pending_email_tasks = email_q_res.data or []
+        except Exception as e:
+            print(f"[EMAIL PENDING] user={user_id}: {e}")
+
         # ─── URL ENRICHMENT ───
         dumps_text = '\n---\n'.join([d.get('content', '') for d in dumps]) if dumps else 'None'
         enriched_links = []
@@ -407,6 +726,7 @@ async def process_user(user_id: str, is_manual_test: bool):
         SYSTEM_LOAD: {'OVERLOADED' if is_overloaded else 'OPTIMAL'}
         MONDAY_REENTRY: {'TRUE' if is_monday_morning else 'FALSE'}
         STAGNANT URGENT TASKS: {json.dumps(overdue_tasks)}
+        STALE_TASKS: {stale_context or 'None'}
         PERSONA GUIDELINE: {system_persona}
         HINDSIGHT_STALE: {'TRUE' if hindsight_stale else 'FALSE'}
 
@@ -416,6 +736,9 @@ async def process_user(user_id: str, is_manual_test: bool):
         KNOWLEDGE GRAPH (Relationships between entities):
         {graph_context}
 
+        CANONICAL STRATEGIC TRUTH (synthesized project knowledge — context only, do NOT list in briefing):
+        {canonical_context}
+
         CONTEXT:
         - PROJECTS: {projects_names}
         - PEOPLE: {people_names}
@@ -424,6 +747,8 @@ async def process_user(user_id: str, is_manual_test: bool):
         - ENRICHED WEB LINKS: {link_context}
         - NEWLY ENRICHED RESOURCES: {newly_enriched_context}
         - NEW RAW INPUTS: {dumps_text}
+        - 📧 EMAIL-SUGGESTED TASKS (surface under "📧 Inbox" section — user decides, never auto-create):
+        {chr(10).join(f"- {t['suggested_title']} (Project: {t.get('suggested_project') or 'Unknown'})" for t in pending_email_tasks) if pending_email_tasks else "None"}
 
         INSTRUCTIONS:
         1. STRICT DATA FIDELITY: Never invent or hallucinate tasks, projects, or people.
@@ -438,14 +763,16 @@ async def process_user(user_id: str, is_manual_test: bool):
         6. AUTO-ONBOARDING: New client/org -> "new_projects". New person mentioned -> "new_people".
         7. WEEKEND FILTER: If weekend ({is_weekend}), hide work tasks. Note any work inputs for Monday.
         8. RESOURCE CAPTURE: If NEW INPUTS contains URLs, categorize them and add to "resources" array. Do NOT create tasks from URLs unless the user explicitly says to.
+        9. STALE LOOPS: If STALE_TASKS has items, include a ⏳ *STALE LOOPS* section listing them with day count. Max 5.
 
-        9. *BRIEFING FORMAT — THIS IS CRITICAL*:
+        10. *BRIEFING FORMAT — THIS IS CRITICAL*:
             The briefing will be sent directly via WhatsApp. It must look clean, structured, and professional.
 
             HEADER: Start with a one-line greeting: "*Good [morning/afternoon/evening], {user_name}* 👋" based on CURRENT TIME.
             Then a blank line.
 
             If STAGNANT URGENT TASKS exist, add a *🔴 OVERDUE* section first with those items.
+            If STALE_TASKS exist, add a *⏳ STALE LOOPS* section listing them with days count.
 
             SECTION STRUCTURE (only include sections that have items):
             - Use section headers with emoji: "✅ *COMPLETED*", "💼 *WORK*", "🏠 *HOME*", "💡 *IDEAS*", "📌 *UPCOMING*"
@@ -453,12 +780,9 @@ async def process_user(user_id: str, is_manual_test: bool):
             - Add deadline/date info inline when relevant: "→ Take RE letter to RTO _(by Monday)_"
             - Add a blank line between sections.
             - Hide WORK section on weekends. Hide HOME/IDEAS sections in morning briefings unless relevant.
+            - If EMAIL-SUGGESTED TASKS has items, add a "📧 *INBOX*" section. Format each as: "→ [task]. Reply to confirm or ignore."
 
-            FOOTER: End with a short one-liner based on mission mode and time of day. Examples:
-            - Morning: "Let's attack the day. 🚀"
-            - Midday: "Stay locked in. You're on track. 💪"
-            - Evening: "Wind down. Tomorrow's another round. 🌙"
-            - Weekend: "Enjoy the weekend. Recharge. ⚡"
+            FOOTER: End with a short one-liner based on mission mode and time of day.
 
             FORMATTING RULES:
             - Use ONLY single asterisks (*bold*) for bold. NEVER use double asterisks.
@@ -468,7 +792,7 @@ async def process_user(user_id: str, is_manual_test: bool):
             - Keep it concise: max 3-5 items per section. No filler text.
             - Do NOT add "Reply ok" or session prompts.
 
-        10. MARKDOWN SAFETY:
+        11. MARKDOWN SAFETY:
             - Use ONLY single asterisks (*) for bold.
             - Never nest formatting.
             - Arrow (→) for list items, not dashes or bullets.
@@ -488,36 +812,64 @@ async def process_user(user_id: str, is_manual_test: bool):
         }}
         """
 
-        # ─── AI GENERATION ───
-        client = get_genai_client()
-        result = await client.aio.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            )
-        )
-
-        raw_text = result.text
-        clean_json = raw_text.replace('```json', '').replace('```', '').strip()
-
+        # ─── AI GENERATION (with multi-provider fallback) ───
+        ai_data = {
+            "briefing": f"⚠️ System busy. {len(dumps)} inputs queued.",
+            "new_tasks": [], "logs": [], "completed_task_ids": [],
+            "new_projects": [], "new_people": [], "resources": [],
+        }
         try:
+            response = await call_llm_with_fallback(
+                prompt=prompt,
+                model=BRIEFING_MODEL,
+                config={"response_mime_type": "application/json"},
+                is_critical=True,
+                require_json=True,
+            )
+            raw_text = response.text
+            clean_json = re.sub(r'^```json\n?', '', raw_text).strip()
+            clean_json = re.sub(r'\n?```$', '', clean_json).strip()
             ai_data = json.loads(clean_json)
-        except json.JSONDecodeError:
-            print(f"[JSON ERROR] Could not parse for user {user_id}")
-            return
+        except Exception as e:
+            print(f"[AI ERROR] user={user_id}: {e}")
+            error_log.append("AI generation failed")
 
         # ─── SEND BRIEFING ───
         if ai_data.get("briefing"):
             briefing = ai_data["briefing"].strip()
             briefing = re.sub(r'\[?ID:\s*\d+\]?', '', briefing, flags=re.IGNORECASE).strip()
 
+            # ─── EMAIL DECISIONS inline section ───
+            shown_email_ids = []
+            if pending_email_tasks:
+                lines = [f"\n\n📨 *INBOX* ({len(pending_email_tasks)}) — reply code yes/drop"]
+                for row in pending_email_tasks:
+                    shortcode = str(row['id'])[-4:]
+                    proj = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
+                    lines.append(f"[{shortcode}] {row['suggested_title'][:60]}{proj}")
+                briefing += "\n".join(lines)
+                shown_email_ids = [row['id'] for row in pending_email_tasks]
+
             # Add Google connect nudge if not connected
             if not await has_google_connection(user_id):
                 briefing += "\n\n📅 _Tip: Connect Google Calendar to auto-sync your tasks. Type *settings* to set it up._"
 
+            # Append error summary if any pipeline failures
+            if error_log:
+                briefing += f"\n\n⚠️ {len(error_log)} item(s) need attention — check logs."
+
             await send_message(user_id, briefing)
             await record_usage(user_id, "pulse", channel="system")
+
+            # Mark email tasks as shown after confirmed send
+            if shown_email_ids:
+                try:
+                    await supabase.table('email_pending_tasks') \
+                        .update({'shown_in_brief': True}) \
+                        .in_('id', shown_email_ids) \
+                        .execute()
+                except Exception as e:
+                    print(f"[EMAIL SHOWN] user={user_id}: {e}")
 
         # ─── DATABASE WRITES ───
 
@@ -529,7 +881,7 @@ async def process_user(user_id: str, is_manual_test: bool):
         # New Projects
         new_projects = ai_data.get("new_projects", [])
         if new_projects:
-            valid_tags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON', 'CHURCH']
+            valid_tags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON', 'CHURCH', 'QHORD', 'INBOX']
             inserts = []
             for np in new_projects:
                 exists = any(
@@ -566,6 +918,7 @@ async def process_user(user_id: str, is_manual_test: bool):
 
         # Task Completions/Cancellations
         completed = ai_data.get("completed_task_ids", [])
+        new_tasks = ai_data.get("new_tasks", [])
         user_has_google = await has_google_connection(user_id) if completed or new_tasks else False
 
         if completed:
@@ -578,6 +931,26 @@ async def process_user(user_id: str, is_manual_test: bool):
                 if status == 'done':
                     updates['completed_at'] = now.isoformat()
                 await supabase.table('tasks').update(updates).eq('id', target_id).eq('user_id', user_id).execute()
+
+                # Outcome memory: record when task is done
+                if status == 'done':
+                    try:
+                        task_info = await supabase.table('tasks') \
+                            .select('title, project_id') \
+                            .eq('id', target_id).eq('user_id', user_id).limit(1).execute()
+                        if task_info.data:
+                            t_title = task_info.data[0].get('title', '')
+                            proj_id = task_info.data[0].get('project_id')
+                            proj_name = None
+                            if proj_id:
+                                proj_r = await supabase.table('projects') \
+                                    .select('name').eq('id', proj_id).limit(1).execute()
+                                proj_name = proj_r.data[0]['name'] if proj_r.data else None
+                            asyncio.create_task(
+                                write_outcome_memory(user_id, t_title, proj_name)
+                            )
+                    except Exception as e:
+                        print(f"[OUTCOME] user={user_id}: {e}")
 
                 # Google sync: complete task + delete calendar event
                 if user_has_google:
@@ -593,14 +966,37 @@ async def process_user(user_id: str, is_manual_test: bool):
                                 await supabase.table('tasks').update({'google_event_id': None}).eq('id', target_id).eq('user_id', user_id).execute()
                     except Exception as e:
                         print(f"[GOOGLE SYNC] Completion sync failed for task {target_id}: {e}")
+                        error_log.append(f"Google sync failed for task {target_id}")
 
         # New Tasks
-        new_tasks = ai_data.get("new_tasks", [])
         if not user_has_google and new_tasks:
             user_has_google = await has_google_connection(user_id)
         if new_tasks:
             inserts = []
+            explicit_times = []
+            time_slots_used: list[str] = []  # de-clash tracker
+
             for t in new_tasks:
+                title = t.get('title', '').strip()
+                if not title:
+                    continue
+
+                # ─── IDEMPOTENCY GUARD (MD5 dedup key) ───
+                dedup_key = hashlib.md5(
+                    f"{title.lower()}:{user_id}".encode()
+                ).hexdigest()[:16]
+                try:
+                    existing = await supabase.table('tasks').select('id') \
+                        .eq('user_id', user_id) \
+                        .eq('dedup_key', dedup_key) \
+                        .not_.in_('status', ['done', 'cancelled']) \
+                        .limit(1).execute()
+                    if existing.data:
+                        print(f"[DEDUP] Skipped duplicate task: '{title}'")
+                        continue
+                except Exception:
+                    pass  # fail open — don't block on dedup error
+
                 ai_target = (t.get('project_name') or '').lower()
                 match = next((p for p in projects if ai_target in p.get('name', '').lower() or p.get('name', '').lower() in ai_target), None)
                 if not match:
@@ -608,45 +1004,82 @@ async def process_user(user_id: str, is_manual_test: bool):
                 if not match and projects:
                     match = projects[0]
 
+                # ─── DE-CLASH LOGIC (stagger overlapping times 15 min) ───
+                raw_reminder = t.get('reminder_at') or t.get('est_start')
+                sanitized_reminder = None
+                explicit_time = False
+                if raw_reminder:
+                    sanitized_reminder = str(raw_reminder).replace(' ', 'T')
+                    if 'T' in sanitized_reminder:
+                        explicit_time = True
+                        slot_day = sanitized_reminder.split('T')[0]
+                        same_slot_count = sum(1 for s in time_slots_used if s.startswith(slot_day))
+                        if same_slot_count > 0:
+                            try:
+                                from datetime import datetime as _dt
+                                base_dt = _dt.fromisoformat(sanitized_reminder.replace('Z', '+00:00'))
+                                staggered = base_dt + timedelta(minutes=15 * same_slot_count)
+                                sanitized_reminder = staggered.strftime('%Y-%m-%dT%H:%M:%S') + '+05:30'
+                                print(f"[DE-CLASH] '{title}' staggered to {sanitized_reminder.split('T')[1][:5]}")
+                            except Exception:
+                                pass
+                        time_slots_used.append(sanitized_reminder.split('T')[0])
+
                 inserts.append({
                     'user_id': user_id,
-                    'title': t.get('title', ''),
+                    'title': title,
                     'project_id': match.get('id') if match else None,
                     'priority': (t.get('priority') or 'important').lower(),
                     'status': 'todo',
                     'estimated_minutes': t.get('est_min', 15),
                     'is_revenue_critical': t.get('is_revenue_critical', False),
+                    'reminder_at': sanitized_reminder,
+                    'dedup_key': dedup_key,
                 })
+                explicit_times.append(explicit_time)
+
             if inserts:
                 result = await supabase.table('tasks').insert(inserts).execute()
 
-                # Google sync: create Google Tasks + Calendar events for new tasks
-                if user_has_google and result.data:
-                    for created_task in result.data:
-                        try:
-                            t_id = created_task.get('id')
-                            t_title = created_task.get('title', '')
-                            t_reminder = created_task.get('reminder_at')
-                            t_priority = created_task.get('priority')
+                # Fire graph edge writing + Google sync as background tasks
+                if result.data:
+                    for created_task, expl_time in zip(result.data, explicit_times):
+                        t_id = created_task.get('id')
+                        t_title = created_task.get('title', '')
+                        t_proj_id = created_task.get('project_id')
+                        t_reminder = created_task.get('reminder_at')
+                        t_priority = created_task.get('priority')
 
-                            # Create Google Task
-                            g_tid = await sync_to_google_tasks(user_id, t_title, due_at=t_reminder, priority=t_priority)
+                        # Non-blocking graph edge writing
+                        asyncio.create_task(
+                            write_graph_edges_for_task(
+                                user_id=user_id,
+                                task_id=t_id,
+                                task_title=t_title,
+                                project_id=t_proj_id,
+                                people_cache=people,
+                            )
+                        )
 
-                            # Create Calendar event if task has a specific time
-                            g_eid = None
-                            if t_reminder and 'T' in str(t_reminder):
-                                g_eid = await sync_to_calendar(user_id, t_title, t_reminder)
-
-                            # Save Google IDs back to Supabase
-                            if g_tid or g_eid:
-                                g_updates = {}
-                                if g_tid:
-                                    g_updates['google_task_id'] = g_tid
-                                if g_eid:
-                                    g_updates['google_event_id'] = g_eid
-                                await supabase.table('tasks').update(g_updates).eq('id', t_id).eq('user_id', user_id).execute()
-                        except Exception as e:
-                            print(f"[GOOGLE SYNC] New task sync failed: {e}")
+                        # Google sync: create Google Tasks + Calendar events
+                        if user_has_google:
+                            try:
+                                g_tid = await sync_to_google_tasks(
+                                    user_id, t_title, due_at=t_reminder, priority=t_priority
+                                )
+                                g_eid = None
+                                if t_reminder and expl_time:
+                                    g_eid = await sync_to_calendar(user_id, t_title, t_reminder)
+                                if g_tid or g_eid:
+                                    g_updates = {}
+                                    if g_tid:
+                                        g_updates['google_task_id'] = g_tid
+                                    if g_eid:
+                                        g_updates['google_event_id'] = g_eid
+                                    await supabase.table('tasks').update(g_updates).eq('id', t_id).eq('user_id', user_id).execute()
+                            except Exception as e:
+                                print(f"[GOOGLE SYNC] New task sync failed: {e}")
+                                error_log.append(f"Google sync failed for: '{t_title}'")
 
         # Resources (new feature)
         resources = ai_data.get("resources", [])
@@ -670,6 +1103,67 @@ async def process_user(user_id: str, is_manual_test: bool):
                 except Exception as e:
                     # resources table may not exist yet - graceful fallback
                     print(f"[RESOURCES SKIP] Table may not exist: {e}")
+
+        # ─── MISSIONS RESOURCE BACKFILL ───
+        # Auto-link enriched resources to active missions by keyword match
+        try:
+            missions_res = await supabase.table('missions') \
+                .select('id, title').eq('user_id', user_id).eq('status', 'active').execute()
+            active_missions = missions_res.data or []
+            if active_missions:
+                unlinked_res = await supabase.table('resources') \
+                    .select('id, title, strategic_note') \
+                    .eq('user_id', user_id) \
+                    .is_('mission_id', 'null') \
+                    .not_.is_('enriched_at', 'null') \
+                    .limit(30).execute()
+                for resource in (unlinked_res.data or []):
+                    resource_text = f"{resource.get('title', '')} {resource.get('strategic_note', '')}".lower()
+                    for mission in active_missions:
+                        mission_keywords = mission['title'].lower().split()
+                        match_score = sum(1 for kw in mission_keywords if kw in resource_text)
+                        if match_score >= 2:
+                            await supabase.table('resources') \
+                                .update({'mission_id': mission['id']}) \
+                                .eq('id', resource['id']) \
+                                .eq('user_id', user_id) \
+                                .execute()
+                            print(f"[MISSIONS] Linked resource '{resource.get('title')}' → '{mission['title']}'")
+                            break
+        except Exception as e:
+            print(f"[MISSIONS BACKFILL] user={user_id}: {e}")
+
+        # New Missions
+        new_missions = ai_data.get("new_missions", [])
+        if new_missions:
+            try:
+                existing_ms = await supabase.table('missions').select('id, title') \
+                    .eq('user_id', user_id).eq('status', 'active').execute()
+                existing_titles = {normalize_mission_title(m['title']): m for m in (existing_ms.data or [])}
+                run_dedup: set = set()
+                missions_created = 0
+                for mission_title in new_missions:
+                    if not mission_title or not isinstance(mission_title, str):
+                        continue
+                    norm = normalize_mission_title(mission_title)
+                    if not norm or norm in run_dedup or norm in existing_titles:
+                        run_dedup.add(norm)
+                        continue
+                    desc = f"Auto-created by Pulse from recurring patterns on {local_date}."
+                    res = await supabase.table('missions').insert({
+                        'user_id': user_id,
+                        'title': mission_title.strip(),
+                        'status': 'active',
+                        'description': desc,
+                    }).execute()
+                    if res.data:
+                        missions_created += 1
+                        run_dedup.add(norm)
+                        print(f"[MISSIONS] Auto-created: {mission_title}")
+                if missions_created:
+                    print(f"[MISSIONS] Created {missions_created} new mission(s) for {user_id}")
+            except Exception as e:
+                print(f"[MISSIONS WRITE] user={user_id}: {e}")
 
         # Logs
         logs = ai_data.get("logs", [])

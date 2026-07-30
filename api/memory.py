@@ -161,12 +161,14 @@ async def retrieve_hindsight(
     task_inputs: list[str],
     active_tasks: list[dict],
     top_k: int = 5,
+    entity_terms: list[str] | None = None,
 ) -> tuple[list[str], bool]:
     """Multi-signal vector recall for the Pulse briefing context.
 
     Searches against:
       1. Combined text of new raw dumps
       2. Top 3 urgent active task titles
+      3. (optional) entity_terms from people/project names
 
     Returns:
         (formatted_memory_lines, is_stale)
@@ -188,6 +190,12 @@ async def retrieve_hindsight(
         title = t.get("title", "")
         if title:
             search_queries.append(title)
+
+    # Entity-seeded queries (people + project names)
+    if entity_terms:
+        for term in entity_terms[:5]:
+            if term and term.strip():
+                search_queries.append(term.strip())
 
     if not search_queries:
         return ([], False)
