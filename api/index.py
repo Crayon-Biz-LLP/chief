@@ -1,13 +1,13 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from .webhook import process_webhook
-from .pulse import process_pulse
-from .whatsapp import process_whatsapp_webhook
-from .auth import handle_google_auth_start, handle_google_auth_callback
-from .google_sync import backfill_tasks_to_google
-from .research import process_all_research
-from .billing import (
+from api.webhook import process_webhook
+from api.pulse import process_pulse
+from api.whatsapp import process_whatsapp_webhook
+from api.auth import handle_google_auth_start, handle_google_auth_callback
+from api.google_sync import backfill_tasks_to_google
+from api.research import process_all_research
+from api.billing import (
     admin_list_users,
     admin_get_user_detail,
     admin_update_subscription,
